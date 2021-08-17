@@ -1,13 +1,16 @@
 /// Error from parsing a message frame
-#[derive(PartialEq)]
 pub enum Error {
     /// Frame's data has not been fully received
     Incomplete,
     /// Frame's data does not follow specifications
     InvalidFormat,
+    /// Connection reset by peer while there's still data to be sent
+    ConnectionReset,
 
     /// Frame's bytes could not be read as an UTF8 encoded string
     FromUtf8Error(std::string::FromUtf8Error),
+    /// Error from I/O operations
+    IoError(std::io::Error),
 }
 
 impl std::error::Error for Error {}
@@ -17,7 +20,9 @@ impl std::fmt::Debug for Error {
         match self {
             Error::Incomplete => write!(f, "Incomplete frame"),
             Error::InvalidFormat => write!(f, "Invalid frame format"),
+            Error::ConnectionReset => write!(f, "Connection reset by peer"),
             Error::FromUtf8Error(e) => write!(f, "{}", e),
+            Error::IoError(e) => write!(f, "{}", e),
         }
     }
 }
@@ -27,7 +32,9 @@ impl std::fmt::Display for Error {
         match self {
             Error::Incomplete => write!(f, "Incomplete frame"),
             Error::InvalidFormat => write!(f, "Invalid frame format"),
+            Error::ConnectionReset => write!(f, "Connection reset by peer"),
             Error::FromUtf8Error(e) => write!(f, "{}", e),
+            Error::IoError(e) => write!(f, "{}", e),
         }
     }
 }
@@ -35,5 +42,11 @@ impl std::fmt::Display for Error {
 impl From<std::string::FromUtf8Error> for Error {
     fn from(err: std::string::FromUtf8Error) -> Self {
         Error::FromUtf8Error(err)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::IoError(err)
     }
 }
