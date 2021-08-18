@@ -8,13 +8,21 @@ use tokio::{
 
 use super::{Error, Frame};
 
+/// Sends and receives [`Frame`] values from the remote peer.
+///
+/// [`Frame`]: crate::resp::Frame;
 #[derive(Debug)]
 pub struct Connection {
+    // wraps TcpStream inside a BufWriter to reduce the number of writes
+    // made to the socket
     stream: BufWriter<TcpStream>,
-    buffer: BytesMut, // buffered reader
+    // buffered data from read operation
+    buffer: BytesMut,
 }
 
 impl Connection {
+    /// Creates a new connection over the given TCP stream and initializes the
+    /// inner read/write buffers
     pub fn new(tcp: TcpStream) -> Self {
         Self {
             stream: BufWriter::new(tcp),
@@ -22,6 +30,13 @@ impl Connection {
         }
     }
 
+    /// Reads the available frame from the underlying buffer
+    ///
+    /// Returns the received frame if succeeded. When the underlying [`TcpStream`]
+    /// is closed and there's no data left to be read, returns `None`. Otherwise,
+    /// an error is returned.
+    ///
+    /// [`TcpStream`]: tokio::net::TcpStream
     pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
         loop {
             if let Some(frame) = self.parse_frame()? {
@@ -30,6 +45,7 @@ impl Connection {
 
             if self.stream.read_buf(&mut self.buffer).await? == 0 {
                 if self.buffer.is_empty() {
+                    // Peer closed when all data is parsed
                     return Ok(None);
                 } else {
                     // The peer closed the socket while sending a frame.
@@ -39,6 +55,7 @@ impl Connection {
         }
     }
 
+    /// Write a frame to the underlying TCP stream
     pub async fn write_frame(&mut self, frame: &Frame) -> Result<(), Error> {
         match frame {
             Frame::SimpleString(s) => {
@@ -99,7 +116,7 @@ impl Connection {
                 Ok(Some(frame))
             }
             // Not enough data has been buffered
-            Err(Incomplete) => Ok(None),
+            Err(Error::Incomplete) => Ok(None),
             // An error was encountered
             Err(e) => Err(e),
         }
