@@ -7,7 +7,10 @@ use super::Error;
 
 const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
 
-/// Data types as specified in [Redis Protocol (RESP)]
+/// Data types as specified in [Redis Protocol (RESP)].
+///
+/// This is used as the smallest data unit that is accepted by the client
+/// and the server when they communicate.
 ///
 /// [Redis Protocol (RESP)]: https://redis.io/topics/protocol
 #[derive(Debug, PartialEq, Clone)]
@@ -66,7 +69,7 @@ impl Frame {
             b'$' => {
                 let n = get_integer(reader)?;
                 if n >= 0 {
-                    let data_len = n as usize + 2;
+                    let data_len = n as usize + 2; // skip data + '\r\n'
                     if data_len > reader.remaining() {
                         return Err(Error::Incomplete);
                     }
@@ -88,7 +91,7 @@ impl Frame {
 fn parse_simple_string<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
     let line_length = get_line_length(reader)?;
     let simple_str = reader.copy_to_bytes(line_length - 2);
-    reader.advance(2);
+    reader.advance(2); // "\r\n"
 
     let simple_str = String::from_utf8(simple_str.to_vec())?;
     Ok(Frame::SimpleString(simple_str))
@@ -97,7 +100,7 @@ fn parse_simple_string<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
 fn parse_error<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
     let line_length = get_line_length(reader)?;
     let error_str = reader.copy_to_bytes(line_length - 2);
-    reader.advance(2);
+    reader.advance(2); // "\r\n"
 
     let error_str = String::from_utf8(error_str.to_vec())?;
     Ok(Frame::Error(error_str))
@@ -220,268 +223,137 @@ fn get_byte<R: Buf>(reader: &mut R) -> Result<u8, Error> {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use std::sync::Once;
-    use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
     use super::*;
 
-    fn init() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            let env_filter =
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("trace"));
-            let fmt_layer = tracing_subscriber::fmt::Layer::new().with_writer(std::io::stdout);
-            let subscriber = Registry::default().with(env_filter).with(fmt_layer);
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("Unable to set a global subscriber");
-        });
-    }
-
     #[test]
     fn parse_simple_string_valid() {
-        init();
-        let mut buf = Cursor::new(b"+OK\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::SimpleString("OK".to_string()));
+        assert_frame(b"+OK\r\n", Frame::SimpleString("OK".to_string()));
     }
 
     #[test]
-    fn parse_simple_string_with_cr() {
-        init();
-        let mut buf = Cursor::new(b"+OK\r\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_simple_string_invalid_carriage_return() {
+        assert_frame_error(b"+OK\r\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_simple_string_with_lf() {
-        init();
-        let mut buf = Cursor::new(b"+OK\n\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_simple_string_invalid_line_feed() {
+        assert_frame_error(b"+OK\n\r\n", Error::InvalidFormat);
     }
 
     #[test]
     fn parse_error_valid() {
-        init();
-
-        // Some examples from Redis
-
-        let mut buf = Cursor::new(b"-Error test\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::Error("Error test".to_string()));
-
-        let mut buf = Cursor::new(b"-ERR unknown command 'foobar'\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(
-            frame,
-            Frame::Error("ERR unknown command 'foobar'".to_string())
-        );
-
-        let mut buf =
-            Cursor::new("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(
-            frame,
+        assert_frame(b"-Error test\r\n", Frame::Error("Error test".to_string()));
+        assert_frame(
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
             Frame::Error(
-                "WRONGTYPE Operation against a key holding the wrong kind of value".to_string()
-            )
+                "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+            ),
+        );
+        assert_frame(
+            b"-ERR unknown command 'foobar'\r\n",
+            Frame::Error("ERR unknown command 'foobar'".to_string()),
         );
     }
 
     #[test]
-    fn parse_error_with_cr() {
-        init();
-        let mut buf = Cursor::new(b"-Error test\r\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_error_invalid_carriage_return() {
+        assert_frame_error(b"-Error test\r\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_error_with_lf() {
-        init();
-        let mut buf = Cursor::new(b"-Error test\n\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_error_invalid_line_feed() {
+        assert_frame_error(b"-Error test\n\r\n", Error::InvalidFormat);
     }
 
     #[test]
     fn parse_integer_valid() {
-        init();
-        let mut buf = Cursor::new(b":1000\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::Integer(1000));
+        assert_frame(b":1000\r\n", Frame::Integer(1000));
     }
 
     #[test]
-    fn parse_integer_empty() {
-        init();
-        let mut buf = Cursor::new(b":\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_integer_invalid_empty_buffer() {
+        assert_frame_error(b":\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_integer_nan() {
-        init();
-        let mut buf = Cursor::new(b":nan\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_integer_invalid_non_digit_character() {
+        assert_frame_error(b":nan\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_integer_underflow() {
-        init();
-        let mut buf = Cursor::new(b":-9223372036854775809\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_integer_invalid_value_underflow() {
+        assert_frame_error(b":-9223372036854775809\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_integer_overflow() {
-        init();
-        let mut buf = Cursor::new(b":9223372036854775808\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+    fn parse_integer_invalid_value_overflow() {
+        assert_frame_error(b":9223372036854775808\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_bulk_string_valid_simple() {
-        init();
-        let mut buf = Cursor::new(b"$5\r\nhello\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::BulkString("hello".into()));
+    fn parse_bulk_string_valid() {
+        assert_frame(b"$5\r\nhello\r\n", Frame::BulkString("hello".into()));
+        assert_frame(b"$0\r\n\r\n", Frame::BulkString(Bytes::new()));
+        assert_frame(
+            b"$11\r\nhello\nworld\r\n",
+            Frame::BulkString("hello\nworld".into()),
+        );
+        assert_frame(
+            b"$12\r\nhello\r\nworld\r\n",
+            Frame::BulkString("hello\r\nworld".into()),
+        );
     }
 
     #[test]
-    fn parse_bulk_string_valid_empty() {
-        init();
-        let mut buf = Cursor::new(b"$0\r\n\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::BulkString(Bytes::new()));
+    fn parse_bulk_string_invalid_length_prefix() {
+        assert_frame_error(b"$-2\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_bulk_string_valid_null() {
-        init();
-        let mut buf = Cursor::new(b"$-1\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::Null);
+    fn parse_bulk_string_invalid_length_prefix_too_large() {
+        assert_frame_error(b"$24\r\nhello\r\nworld\r\n", Error::Incomplete);
     }
 
     #[test]
-    fn parse_bulk_string_valid_contains_line_feed() {
-        init();
-        let mut buf = Cursor::new(b"$11\r\nhello\nworld\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::BulkString("hello\nworld".into()));
+    fn parse_bulk_string_invalid_length_prefix_too_small() {
+        assert_frame_error(b"$6\r\nhello\r\nworld\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_bulk_string_valid_contains_crlf() {
-        init();
-        let mut buf = Cursor::new(b"$12\r\nhello\r\nworld\r\n");
+    fn parse_array_valid() {
+        assert_frame(b"*0\r\n", Frame::Array(vec![]));
 
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::BulkString("hello\r\nworld".into()));
-    }
-
-    #[test]
-    fn parse_bulk_string_length_invalid() {
-        init();
-        let mut buf = Cursor::new(b"$-2\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let parse_err = Frame::parse(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
-    }
-
-    #[test]
-    fn parse_bulk_string_length_prefix_larger_than_content() {
-        init();
-        let mut buf = Cursor::new(b"$24\r\nhello\r\nworld\r\n");
-        let parse_err = Frame::check(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::Incomplete));
-    }
-
-    #[test]
-    fn parse_bulk_string_length_prefix_smaller_than_content() {
-        init();
-        let mut buf = Cursor::new(b"$6\r\nhello\r\nworld\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let parse_err = Frame::parse(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
-    }
-
-    #[test]
-    fn parse_array_valid_multi_cases() {
-        let mut buf = Cursor::new(b"*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(
-            frame,
+        assert_frame(
+            b"*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",
             Frame::Array(vec![
                 Frame::BulkString("foo".into()),
-                Frame::BulkString("bar".into())
-            ])
+                Frame::BulkString("bar".into()),
+            ]),
         );
 
-        let mut buf = Cursor::new("*3\r\n:1\r\n:2\r\n:3\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(
-            frame,
+        assert_frame(
+            b"*3\r\n:1\r\n:2\r\n:3\r\n",
             Frame::Array(vec![
                 Frame::Integer(1),
                 Frame::Integer(2),
-                Frame::Integer(3)
-            ])
+                Frame::Integer(3),
+            ]),
         );
 
-        let mut buf = Cursor::new("*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(
-            frame,
+        assert_frame(
+            b"*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n",
             Frame::Array(vec![
                 Frame::Integer(1),
                 Frame::Integer(2),
                 Frame::Integer(3),
                 Frame::Integer(4),
-                Frame::BulkString("foobar".into())
-            ])
+                Frame::BulkString("foobar".into()),
+            ]),
         );
 
-        let mut buf = Cursor::new("*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(
-            frame,
+        assert_frame(
+            b"*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n",
             Frame::Array(vec![
                 Frame::Array(vec![
                     Frame::Integer(1),
@@ -491,52 +363,54 @@ mod tests {
                 Frame::Array(vec![
                     Frame::SimpleString("Foo".into()),
                     Frame::Error("Bar".into()),
-                ])
-            ])
+                ]),
+            ]),
         );
 
-        let mut buf = Cursor::new("*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(
-            frame,
+        assert_frame(
+            b"*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n",
             Frame::Array(vec![
                 Frame::BulkString("foo".into()),
                 Frame::Null,
-                Frame::BulkString("bar".into())
+                Frame::BulkString("bar".into()),
             ]),
         );
     }
 
     #[test]
-    fn parse_array_valid_empty() {
-        init();
-        let mut buf = Cursor::new(b"*0\r\n");
-
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::Array(vec![]));
+    fn parse_array_length_invalid_length_prefix() {
+        assert_frame_error(b"*-2\r\n", Error::InvalidFormat);
     }
 
     #[test]
-    fn parse_array_valid_null() {
-        init();
-        let mut buf = Cursor::new(b"*-1\r\n");
-        Frame::check(&mut buf).unwrap();
-        buf.set_position(0);
-        let frame = Frame::parse(&mut buf).unwrap();
-        assert_eq!(frame, Frame::Null);
+    fn parse_null_valid() {
+        assert_frame(b"$-1\r\n", Frame::Null);
+        assert_frame(b"*-1\r\n", Frame::Null);
     }
 
-    #[test]
-    fn parse_array_length_invalid_format() {
-        init();
-        let mut buf = Cursor::new(b"*-2\r\n");
-        Frame::check(&mut buf).unwrap();
+    fn assert_frame(input_data: &[u8], expected_frame: Frame) {
+        let frame = parse_frame(input_data).unwrap();
+        assert_eq!(frame, expected_frame);
+    }
+
+    fn assert_frame_error(input_data: &[u8], expected_err: Error) {
+        let err = parse_frame(input_data).unwrap_err();
+        let assertion = match (err, expected_err) {
+            (Error::Incomplete, Error::Incomplete) => true,
+            (Error::InvalidFormat, Error::InvalidFormat) => true,
+            (Error::ConnectionReset, Error::ConnectionReset) => true,
+            (Error::FromUtf8Error(e1), Error::FromUtf8Error(e2)) => e1 == e2,
+            _ => unimplemented!("Unreleated errors"),
+        };
+        assert!(assertion);
+    }
+
+    fn parse_frame(input_data: &[u8]) -> Result<Frame, Error> {
+        let mut buf = Cursor::new(input_data);
+
+        Frame::check(&mut buf)?;
         buf.set_position(0);
-        let parse_err = Frame::parse(&mut buf).unwrap_err();
-        assert!(matches!(parse_err, Error::InvalidFormat));
+
+        Frame::parse(&mut buf)
     }
 }
