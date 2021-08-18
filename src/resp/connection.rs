@@ -49,54 +49,14 @@ impl Connection {
                     return Ok(None);
                 } else {
                     // The peer closed the socket while sending a frame.
-                    return Err(Error::ConnectionReset);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "connection reset by peer",
+                    )
+                    .into());
                 }
             }
         }
-    }
-
-    /// Write a frame to the underlying TCP stream
-    pub async fn write_frame(&mut self, frame: &Frame) -> Result<(), Error> {
-        match frame {
-            Frame::SimpleString(s) => {
-                // frame init
-                self.stream.write_u8(b'+').await?;
-                // send frame content
-                self.stream.write_all(s.as_bytes()).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-            Frame::Error(e) => {
-                // frame init
-                self.stream.write_u8(b'-').await?;
-                // send frame content
-                self.stream.write_all(e.as_bytes()).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-            Frame::Integer(i) => {
-                // frame init
-                self.stream.write_u8(b':').await?;
-
-                // send frame content
-                self.write_decimal(*i).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-            Frame::Null => {
-                self.stream.write_all(b"$-1\r\n").await?;
-            }
-            Frame::BulkString(bs) => {
-                // frame init
-                self.stream.write_u8(b'$').await?;
-                // send frame content
-                let len = bs.len();
-                self.write_decimal(len as i64).await?;
-                self.stream.write_all(bs).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-            Frame::Array(_val) => unimplemented!(),
-        }
-
-        self.stream.flush().await?;
-        Ok(())
     }
 
     fn parse_frame(&mut self) -> Result<Option<Frame>, Error> {
@@ -116,10 +76,84 @@ impl Connection {
                 Ok(Some(frame))
             }
             // Not enough data has been buffered
-            Err(Error::Incomplete) => Ok(None),
+            Err(Error::IncompleteFrame) => Ok(None),
             // An error was encountered
             Err(e) => Err(e),
         }
+    }
+
+    /// Write a frame to the underlying TCP stream
+    pub async fn write_frame(&mut self, frame: &Frame) -> Result<(), Error> {
+        if let Frame::Array(items) = frame {
+            self.write_array(items).await?;
+        } else {
+            self.write_single_value(frame).await?;
+        }
+
+        self.stream.flush().await?;
+        Ok(())
+    }
+
+    async fn write_array(&mut self, items: &[Frame]) -> Result<(), Error> {
+        // frame init
+        self.stream.write_u8(b'*').await?;
+
+        // send frame content
+        let len = items.len();
+        self.write_decimal(len as i64).await?;
+        self.stream.write_all(b"\r\n").await?;
+
+        for item in items {
+            self.write_single_value(&item).await?;
+        }
+        Ok(())
+    }
+
+    async fn write_single_value(&mut self, frame: &Frame) -> Result<(), Error> {
+        match frame {
+            Frame::SimpleString(s) => {
+                // frame init
+                self.stream.write_u8(b'+').await?;
+
+                // send string content
+                self.stream.write_all(s.as_bytes()).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Error(e) => {
+                // frame init
+                self.stream.write_u8(b'-').await?;
+
+                // send error content
+                self.stream.write_all(e.as_bytes()).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Integer(i) => {
+                // frame init
+                self.stream.write_u8(b':').await?;
+
+                // send integer as digits
+                self.write_decimal(*i).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Null => {
+                self.stream.write_all(b"$-1\r\n").await?;
+            }
+            Frame::BulkString(bs) => {
+                // frame init
+                self.stream.write_u8(b'$').await?;
+
+                // send bulk's length as digits
+                let len = bs.len();
+                self.write_decimal(len as i64).await?;
+                self.stream.write_all(b"\r\n").await?;
+
+                // send bulk's content
+                self.stream.write_all(bs).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Array(_) => unimplemented!(),
+        }
+        Ok(())
     }
 
     async fn write_decimal(&mut self, value: i64) -> Result<(), Error> {

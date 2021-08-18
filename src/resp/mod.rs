@@ -6,6 +6,8 @@ mod connection;
 mod error;
 mod frame;
 
+mod cmd;
+
 pub use client::Client;
 pub use connection::Connection;
 pub use error::Error;

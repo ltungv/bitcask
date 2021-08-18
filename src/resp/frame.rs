@@ -3,7 +3,7 @@
 
 use bytes::{Buf, Bytes};
 
-use super::Error;
+use super::{cmd::Get, Error};
 
 const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
 
@@ -47,7 +47,7 @@ impl Frame {
             b':' => parse_integer(reader)?,
             b'$' => parse_bulk_string(reader)?,
             b'*' => parse_array(reader)?,
-            _ => return Err(Error::InvalidFormat),
+            _ => return Err(Error::InvalidFrame),
         };
         Ok(frame)
     }
@@ -71,7 +71,7 @@ impl Frame {
                 if n >= 0 {
                     let data_len = n as usize + 2; // skip data + '\r\n'
                     if data_len > reader.remaining() {
-                        return Err(Error::Incomplete);
+                        return Err(Error::IncompleteFrame);
                     }
                     reader.advance(data_len);
                 }
@@ -82,9 +82,44 @@ impl Frame {
                     Frame::check(reader)?;
                 }
             }
-            _ => return Err(Error::InvalidFormat),
+            _ => return Err(Error::InvalidFrame),
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Display for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        match self {
+            Self::SimpleString(s) => s.fmt(f),
+            Self::Error(s) => s.fmt(f),
+            Self::Integer(n) => n.fmt(f),
+            Self::BulkString(s) => match String::from_utf8(s.to_vec()) {
+                Ok(s) => s.fmt(f),
+                Err(_) => write!(f, "{:?}", s),
+            },
+            Self::Array(arr) => {
+                write!(f, "[")?;
+                let mut it = arr.iter();
+                if let Some(item) = it.next() {
+                    write!(f, "{}", item)?;
+                }
+                for item in it {
+                    write!(f, ", {}", item)?;
+                }
+                write!(f, "]")
+            }
+            Self::Null => write!(f, "(nil)"),
+        }
+    }
+}
+
+impl From<Get> for Frame {
+    fn from(cmd_get: Get) -> Self {
+        Self::Array(vec![
+            Self::BulkString("GET".into()),
+            Self::BulkString(cmd_get.key.into()),
+        ])
     }
 }
 
@@ -117,15 +152,15 @@ fn parse_bulk_string<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
         return Ok(Frame::Null);
     }
     if !(0..=MAX_BULK_STRING_LENGTH).contains(&bulk_len) {
-        return Err(Error::InvalidFormat);
+        return Err(Error::InvalidFrame);
     }
 
     let bulk_len = bulk_len as usize;
     if (bulk_len + 2) > reader.remaining() {
-        return Err(Error::Incomplete);
+        return Err(Error::IncompleteFrame);
     }
     if reader.chunk()[bulk_len] != b'\r' || reader.chunk()[bulk_len + 1] != b'\n' {
-        return Err(Error::InvalidFormat);
+        return Err(Error::InvalidFrame);
     }
 
     let bulk_bytes = reader.copy_to_bytes(bulk_len as usize);
@@ -139,7 +174,7 @@ fn parse_array<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
         return Ok(Frame::Null);
     }
     if array_len < 0 {
-        return Err(Error::InvalidFormat);
+        return Err(Error::InvalidFrame);
     }
 
     let array_len = array_len as usize;
@@ -169,9 +204,9 @@ fn get_integer<R: Buf>(reader: &mut R) -> Result<i64, Error> {
                     int_value
                         .unwrap_or(0)
                         .checked_mul(10)
-                        .ok_or(Error::InvalidFormat)?
+                        .ok_or(Error::InvalidFrame)?
                         .checked_add((b - b'0') as i64)
-                        .ok_or(Error::InvalidFormat)?,
+                        .ok_or(Error::InvalidFrame)?,
                 );
             }
             b'\r' => {
@@ -179,17 +214,17 @@ fn get_integer<R: Buf>(reader: &mut R) -> Result<i64, Error> {
                     reader.advance(i + 2);
                     if let Some(int_value) = int_value {
                         if is_negative {
-                            return Ok(int_value.checked_neg().ok_or(Error::InvalidFormat)?);
+                            return int_value.checked_neg().ok_or(Error::InvalidFrame);
                         }
                         return Ok(int_value);
                     }
                 }
-                return Err(Error::InvalidFormat);
+                return Err(Error::InvalidFrame);
             }
-            _ => return Err(Error::InvalidFormat),
+            _ => return Err(Error::InvalidFrame),
         }
     }
-    Err(Error::Incomplete)
+    Err(Error::IncompleteFrame)
 }
 
 fn get_line_length<R: Buf>(reader: &mut R) -> Result<usize, Error> {
@@ -202,20 +237,20 @@ fn get_line_length<R: Buf>(reader: &mut R) -> Result<usize, Error> {
                 if reader_chunk[i + 1] == b'\n' {
                     return Ok(i + 2);
                 }
-                return Err(Error::InvalidFormat);
+                return Err(Error::InvalidFrame);
             }
             b'\n' => {
-                return Err(Error::InvalidFormat);
+                return Err(Error::InvalidFrame);
             }
             _ => {}
         }
     }
-    Err(Error::Incomplete)
+    Err(Error::IncompleteFrame)
 }
 
 fn get_byte<R: Buf>(reader: &mut R) -> Result<u8, Error> {
     if !reader.has_remaining() {
-        return Err(Error::Incomplete);
+        return Err(Error::IncompleteFrame);
     }
     Ok(reader.get_u8())
 }
@@ -233,12 +268,12 @@ mod tests {
 
     #[test]
     fn parse_simple_string_invalid_carriage_return() {
-        assert_frame_error(b"+OK\r\r\n", Error::InvalidFormat);
+        assert_frame_error(b"+OK\r\r\n", Error::InvalidFrame);
     }
 
     #[test]
     fn parse_simple_string_invalid_line_feed() {
-        assert_frame_error(b"+OK\n\r\n", Error::InvalidFormat);
+        assert_frame_error(b"+OK\n\r\n", Error::InvalidFrame);
     }
 
     #[test]
@@ -258,12 +293,12 @@ mod tests {
 
     #[test]
     fn parse_error_invalid_carriage_return() {
-        assert_frame_error(b"-Error test\r\r\n", Error::InvalidFormat);
+        assert_frame_error(b"-Error test\r\r\n", Error::InvalidFrame);
     }
 
     #[test]
     fn parse_error_invalid_line_feed() {
-        assert_frame_error(b"-Error test\n\r\n", Error::InvalidFormat);
+        assert_frame_error(b"-Error test\n\r\n", Error::InvalidFrame);
     }
 
     #[test]
@@ -273,22 +308,22 @@ mod tests {
 
     #[test]
     fn parse_integer_invalid_empty_buffer() {
-        assert_frame_error(b":\r\n", Error::InvalidFormat);
+        assert_frame_error(b":\r\n", Error::InvalidFrame);
     }
 
     #[test]
     fn parse_integer_invalid_non_digit_character() {
-        assert_frame_error(b":nan\r\n", Error::InvalidFormat);
+        assert_frame_error(b":nan\r\n", Error::InvalidFrame);
     }
 
     #[test]
     fn parse_integer_invalid_value_underflow() {
-        assert_frame_error(b":-9223372036854775809\r\n", Error::InvalidFormat);
+        assert_frame_error(b":-9223372036854775809\r\n", Error::InvalidFrame);
     }
 
     #[test]
     fn parse_integer_invalid_value_overflow() {
-        assert_frame_error(b":9223372036854775808\r\n", Error::InvalidFormat);
+        assert_frame_error(b":9223372036854775808\r\n", Error::InvalidFrame);
     }
 
     #[test]
@@ -307,17 +342,17 @@ mod tests {
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix() {
-        assert_frame_error(b"$-2\r\n", Error::InvalidFormat);
+        assert_frame_error(b"$-2\r\n", Error::InvalidFrame);
     }
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix_too_large() {
-        assert_frame_error(b"$24\r\nhello\r\nworld\r\n", Error::Incomplete);
+        assert_frame_error(b"$24\r\nhello\r\nworld\r\n", Error::IncompleteFrame);
     }
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix_too_small() {
-        assert_frame_error(b"$6\r\nhello\r\nworld\r\n", Error::InvalidFormat);
+        assert_frame_error(b"$6\r\nhello\r\nworld\r\n", Error::InvalidFrame);
     }
 
     #[test]
@@ -379,7 +414,7 @@ mod tests {
 
     #[test]
     fn parse_array_length_invalid_length_prefix() {
-        assert_frame_error(b"*-2\r\n", Error::InvalidFormat);
+        assert_frame_error(b"*-2\r\n", Error::InvalidFrame);
     }
 
     #[test]
@@ -396,9 +431,8 @@ mod tests {
     fn assert_frame_error(input_data: &[u8], expected_err: Error) {
         let err = parse_frame(input_data).unwrap_err();
         let assertion = match (err, expected_err) {
-            (Error::Incomplete, Error::Incomplete) => true,
-            (Error::InvalidFormat, Error::InvalidFormat) => true,
-            (Error::ConnectionReset, Error::ConnectionReset) => true,
+            (Error::IncompleteFrame, Error::IncompleteFrame) => true,
+            (Error::InvalidFrame, Error::InvalidFrame) => true,
             (Error::FromUtf8Error(e1), Error::FromUtf8Error(e2)) => e1 == e2,
             _ => unimplemented!("Unreleated errors"),
         };
