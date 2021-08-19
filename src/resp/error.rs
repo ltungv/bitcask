@@ -1,4 +1,3 @@
-use super::Frame;
 /// Error from parsing a message frame
 pub enum Error {
     /// Frame's data has not been fully received
@@ -8,7 +7,7 @@ pub enum Error {
     /// Could not process client's command
     CommandFailed(String),
     /// Received an unexpected frame
-    UnexpectedFrame(Frame),
+    UnexpectedFrame,
 
     /// Frame's bytes could not be read as an UTF8 encoded string
     FromUtf8Error(std::string::FromUtf8Error),
@@ -23,7 +22,7 @@ impl std::fmt::Debug for Error {
         match self {
             Error::IncompleteFrame => write!(f, "incomplete frame"),
             Error::InvalidFrame => write!(f, "invalid frame format"),
-            Error::UnexpectedFrame(frame) => write!(f, "unexpected frame: {:?}", frame),
+            Error::UnexpectedFrame => write!(f, "got unexpected frame"),
             Error::CommandFailed(err) => write!(f, "command failed: {:?}", err),
             Error::FromUtf8Error(e) => write!(f, "{:?}", e),
             Error::IoError(e) => write!(f, "{:?}", e),
@@ -36,7 +35,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::IncompleteFrame => write!(f, "incomplete frame"),
             Error::InvalidFrame => write!(f, "invalid frame format"),
-            Error::UnexpectedFrame(frame) => write!(f, "unexpected frame: {}", frame),
+            Error::UnexpectedFrame => write!(f, "got unexpected frame"),
             Error::CommandFailed(err) => write!(f, "command failed: {}", err),
             Error::FromUtf8Error(e) => write!(f, "{}", e),
             Error::IoError(e) => write!(f, "{}", e),

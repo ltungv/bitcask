@@ -3,7 +3,10 @@
 
 use bytes::{Buf, Bytes};
 
-use super::{cmd::Get, Error};
+use super::{
+    cmd::{Del, Get, Set},
+    Error,
+};
 
 const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
 
@@ -88,37 +91,31 @@ impl Frame {
     }
 }
 
-impl std::fmt::Display for Frame {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-        match self {
-            Self::SimpleString(s) => s.fmt(f),
-            Self::Error(s) => s.fmt(f),
-            Self::Integer(n) => n.fmt(f),
-            Self::BulkString(s) => match String::from_utf8(s.to_vec()) {
-                Ok(s) => s.fmt(f),
-                Err(_) => write!(f, "{:?}", s),
-            },
-            Self::Array(arr) => {
-                write!(f, "[")?;
-                let mut it = arr.iter();
-                if let Some(item) = it.next() {
-                    write!(f, "{}", item)?;
-                }
-                for item in it {
-                    write!(f, ", {}", item)?;
-                }
-                write!(f, "]")
-            }
-            Self::Null => write!(f, "(nil)"),
+impl From<Del> for Frame {
+    fn from(cmd: Del) -> Self {
+        let mut cmd_data = vec![Self::BulkString("DEL".into())];
+        for key in cmd.keys {
+            cmd_data.push(Self::BulkString(key.into()));
         }
+        Self::Array(cmd_data)
     }
 }
 
 impl From<Get> for Frame {
-    fn from(cmd_get: Get) -> Self {
+    fn from(cmd: Get) -> Self {
         Self::Array(vec![
             Self::BulkString("GET".into()),
-            Self::BulkString(cmd_get.key.into()),
+            Self::BulkString(cmd.key.into()),
+        ])
+    }
+}
+
+impl From<Set> for Frame {
+    fn from(cmd: Set) -> Self {
+        Self::Array(vec![
+            Self::BulkString("SET".into()),
+            Self::BulkString(cmd.key.into()),
+            Self::BulkString(cmd.value),
         ])
     }
 }
