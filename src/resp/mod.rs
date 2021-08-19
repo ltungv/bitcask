@@ -2,11 +2,10 @@
 //! along with a client and a server that supports a minimal set of commands from Redis
 
 mod client;
+mod cmd;
 mod connection;
 mod error;
 mod frame;
-
-mod cmd;
 
 pub use client::Client;
 pub use connection::Connection;

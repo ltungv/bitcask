@@ -12,31 +12,31 @@ use super::{Error, Frame};
 ///
 /// [`Frame`]: crate::resp::Frame;
 #[derive(Debug)]
-pub struct Connection {
-    // wraps TcpStream inside a BufWriter to reduce the number of writes
-    // made to the socket
-    stream: BufWriter<TcpStream>,
+pub struct Connection<S = TcpStream> {
+    // wraps a stream inside a BufWriter to reduce the number of write syscalls
+    stream: BufWriter<S>,
     // buffered data from read operation
     buffer: BytesMut,
 }
 
-impl Connection {
-    /// Creates a new connection over the given TCP stream and initializes the
-    /// inner read/write buffers
-    pub fn new(tcp: TcpStream) -> Self {
+impl<S> Connection<S>
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
+{
+    /// Creates a new connection over the given readable and writable stream, then
+    /// initializes the inner read/write buffers
+    pub fn new(stream: S) -> Self {
         Self {
-            stream: BufWriter::new(tcp),
+            stream: BufWriter::new(stream),
             buffer: BytesMut::with_capacity(8 * 1024),
         }
     }
 
     /// Reads the available frame from the underlying buffer
     ///
-    /// Returns the received frame if succeeded. When the underlying [`TcpStream`]
-    /// is closed and there's no data left to be read, returns `None`. Otherwise,
+    /// Returns the received frame if succeeded. When the underlying stream is
+    /// closed and there's no data left to be read, returns `None`. Otherwise,
     /// an error is returned.
-    ///
-    /// [`TcpStream`]: tokio::net::TcpStream
     pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
         loop {
             if let Some(frame) = self.parse_frame()? {
@@ -57,6 +57,18 @@ impl Connection {
                 }
             }
         }
+    }
+
+    /// Write a frame to the underlying stream
+    pub async fn write_frame(&mut self, frame: &Frame) -> Result<(), Error> {
+        if let Frame::Array(items) = frame {
+            self.write_array(items).await?;
+        } else {
+            self.write_single_value(frame).await?;
+        }
+
+        self.stream.flush().await?;
+        Ok(())
     }
 
     fn parse_frame(&mut self) -> Result<Option<Frame>, Error> {
@@ -80,18 +92,6 @@ impl Connection {
             // An error was encountered
             Err(e) => Err(e),
         }
-    }
-
-    /// Write a frame to the underlying TCP stream
-    pub async fn write_frame(&mut self, frame: &Frame) -> Result<(), Error> {
-        if let Frame::Array(items) = frame {
-            self.write_array(items).await?;
-        } else {
-            self.write_single_value(frame).await?;
-        }
-
-        self.stream.flush().await?;
-        Ok(())
     }
 
     async fn write_array(&mut self, items: &[Frame]) -> Result<(), Error> {
@@ -165,5 +165,125 @@ impl Connection {
         let pos = buf.position() as usize;
         self.stream.write_all(&buf.get_ref()[..pos]).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use bytes::Bytes;
+
+    use super::Connection;
+    use crate::resp::Frame;
+
+    #[tokio::test]
+    async fn write_frame_check_sent_buffer() -> Result<(), Box<dyn std::error::Error>> {
+        for test_case in get_test_cases() {
+            assert_frame_write(test_case.0, test_case.1).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_frame_check_received_frame() -> Result<(), Box<dyn std::error::Error>> {
+        for test_case in get_test_cases() {
+            assert_frame_read(test_case.1, test_case.0).await?;
+        }
+        Ok(())
+    }
+
+    async fn assert_frame_write(
+        frame: Frame,
+        expected_buffer: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut stream = Cursor::new(Vec::new());
+        let mut conn = Connection::new(&mut stream);
+
+        conn.write_frame(&frame).await?;
+        assert_eq!(stream.get_ref(), expected_buffer);
+
+        Ok(())
+    }
+
+    async fn assert_frame_read(
+        buf: &[u8],
+        expected_frame: Frame,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut stream = Cursor::new(Vec::from(buf));
+        let mut conn = Connection::new(&mut stream);
+
+        let frame = conn.read_frame().await?;
+        assert_eq!(frame, Some(expected_frame));
+
+        Ok(())
+    }
+
+    fn get_test_cases() -> Vec<(Frame, &'static [u8])> {
+        vec![
+            // simple strings
+            (Frame::SimpleString("OK".to_string()), b"+OK\r\n"),
+            // errors
+            (Frame::Error("Error test".to_string()), b"-Error test\r\n"),
+            (
+                Frame::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                ),
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            ),
+            (
+                Frame::Error("ERR unknown command 'foobar'".to_string()),
+                b"-ERR unknown command 'foobar'\r\n",
+            ),
+            // bulk strings
+            (Frame::BulkString("hello".into()), b"$5\r\nhello\r\n"),
+            (Frame::BulkString(Bytes::new()), b"$0\r\n\r\n"),
+            (
+                Frame::BulkString("hello\nworld".into()),
+                b"$11\r\nhello\nworld\r\n",
+            ),
+            (
+                Frame::BulkString("hello\r\nworld".into()),
+                b"$12\r\nhello\r\nworld\r\n",
+            ),
+            // arrays
+            (Frame::Array(vec![]), b"*0\r\n"),
+            (
+                Frame::Array(vec![
+                    Frame::BulkString("foo".into()),
+                    Frame::BulkString("bar".into()),
+                ]),
+                b"*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",
+            ),
+            (
+                Frame::Array(vec![
+                    Frame::Integer(1),
+                    Frame::Integer(2),
+                    Frame::Integer(3),
+                ]),
+                b"*3\r\n:1\r\n:2\r\n:3\r\n",
+            ),
+            (
+                Frame::Array(vec![
+                    Frame::Integer(1),
+                    Frame::Integer(2),
+                    Frame::Integer(3),
+                    Frame::Integer(4),
+                    Frame::BulkString("foobar".into()),
+                ]),
+                b"*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n",
+            ),
+            (
+                Frame::Array(vec![
+                    Frame::BulkString("foo".into()),
+                    Frame::Null,
+                    Frame::BulkString("bar".into()),
+                ]),
+                b"*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n",
+            ),
+            // null
+            // NOTE: We use the bulk string representation for null
+            (Frame::Null, b"$-1\r\n"),
+        ]
     }
 }
