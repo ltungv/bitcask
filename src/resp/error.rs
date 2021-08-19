@@ -23,7 +23,7 @@ impl std::fmt::Debug for Error {
             Error::IncompleteFrame => write!(f, "incomplete frame"),
             Error::InvalidFrame => write!(f, "invalid frame format"),
             Error::UnexpectedFrame => write!(f, "got unexpected frame"),
-            Error::CommandFailed(err) => write!(f, "command failed: {:?}", err),
+            Error::CommandFailed(err) => write!(f, "{:?}", err),
             Error::FromUtf8Error(e) => write!(f, "{:?}", e),
             Error::IoError(e) => write!(f, "{:?}", e),
         }
@@ -36,7 +36,7 @@ impl std::fmt::Display for Error {
             Error::IncompleteFrame => write!(f, "incomplete frame"),
             Error::InvalidFrame => write!(f, "invalid frame format"),
             Error::UnexpectedFrame => write!(f, "got unexpected frame"),
-            Error::CommandFailed(err) => write!(f, "command failed: {}", err),
+            Error::CommandFailed(err) => write!(f, "{}", err),
             Error::FromUtf8Error(e) => write!(f, "{}", e),
             Error::IoError(e) => write!(f, "{}", e),
         }
