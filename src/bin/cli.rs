@@ -1,3 +1,4 @@
+use opal::Client;
 use structopt::StructOpt;
 
 #[tokio::main(flavor = "current_thread")]
@@ -7,7 +8,7 @@ async fn main() -> Result<(), opal::resp::Error> {
 
     let opt = ClientCli::from_args();
     let addr = format!("{}:{}", opt.host, opt.port);
-    let mut client = opal::resp::Client::connect(addr).await?;
+    let mut client = Client::connect(addr).await?;
 
     match opt.cmd {
         Command::Set { key, value } => {
