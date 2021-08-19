@@ -7,20 +7,20 @@ async fn main() -> Result<(), opal::resp::Error> {
     tracing_subscriber::fmt::try_init().unwrap();
 
     let opt = ClientCli::from_args();
+    let addr = format!("{}:{}", opt.host, opt.port);
+    let mut client = opal::resp::Client::connect(addr).await?;
+
     match opt.cmd {
         Command::Set { key, val } => {
             unimplemented!();
         }
-        Command::Get { key } => {
-            let mut client = opal::resp::Client::connect(opt.addr).await?;
-            match client.get(&key).await? {
-                Some(val) => match String::from_utf8(val.to_vec()) {
-                    Ok(s) => println!("\"{}\"", s),
-                    Err(_) => println!("{:?}", val),
-                },
-                None => println!("(nil)"),
-            }
-        }
+        Command::Get { key } => match client.get(&key).await? {
+            Some(val) => match String::from_utf8(val.to_vec()) {
+                Ok(s) => println!("\"{}\"", s),
+                Err(_) => println!("{:?}", val),
+            },
+            None => println!("(nil)"),
+        },
         Command::Rm { key } => {
             unimplemented!()
         }
@@ -34,11 +34,18 @@ struct ClientCli {
     cmd: Command,
 
     #[structopt(
-        long = "addr",
-        about = "IP address of the key-value store",
-        default_value = "127.0.0.1:4000"
+        long = "host",
+        about = "Host address of the key-value store",
+        default_value = "127.0.0.1"
     )]
-    addr: SocketAddr,
+    host: String,
+
+    #[structopt(
+        long = "port",
+        about = "Port address of the key-value store",
+        default_value = "6379"
+    )]
+    port: String,
 }
 
 #[derive(StructOpt)]
