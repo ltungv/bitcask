@@ -16,7 +16,7 @@ const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
 /// and the server when they communicate.
 ///
 /// [Redis Protocol (RESP)]: https://redis.io/topics/protocol
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq)]
 pub enum Frame {
     /// A simple string is an UTF8 encoded string that does not contain carriage-return
     /// nor line-feed
@@ -94,8 +94,8 @@ impl Frame {
 impl From<Del> for Frame {
     fn from(cmd: Del) -> Self {
         let mut cmd_data = vec![Self::BulkString("DEL".into())];
-        for key in cmd.keys {
-            cmd_data.push(Self::BulkString(key.into()));
+        for key in cmd.keys() {
+            cmd_data.push(Self::BulkString(key.to_owned().into()));
         }
         Self::Array(cmd_data)
     }
@@ -105,7 +105,7 @@ impl From<Get> for Frame {
     fn from(cmd: Get) -> Self {
         Self::Array(vec![
             Self::BulkString("GET".into()),
-            Self::BulkString(cmd.key.into()),
+            Self::BulkString(cmd.key().to_owned().into()),
         ])
     }
 }
@@ -187,41 +187,10 @@ fn parse_array<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
 }
 
 fn get_integer<R: Buf>(reader: &mut R) -> Result<i64, Error> {
-    let reader_chunk = reader.chunk();
-    let reader_bytes = reader.remaining();
-
-    let mut is_negative = false;
-    let mut int_value: Option<i64> = None;
-
-    for i in 0..reader_bytes - 1 {
-        match reader_chunk[i] {
-            b'-' if i == 0 => is_negative = true,
-            b if (b'0'..b'9').contains(&b) => {
-                int_value = Some(
-                    int_value
-                        .unwrap_or(0)
-                        .checked_mul(10)
-                        .ok_or(Error::InvalidFrame)?
-                        .checked_add((b - b'0') as i64)
-                        .ok_or(Error::InvalidFrame)?,
-                );
-            }
-            b'\r' => {
-                if reader_chunk[i + 1] == b'\n' {
-                    reader.advance(i + 2);
-                    if let Some(int_value) = int_value {
-                        if is_negative {
-                            return int_value.checked_neg().ok_or(Error::InvalidFrame);
-                        }
-                        return Ok(int_value);
-                    }
-                }
-                return Err(Error::InvalidFrame);
-            }
-            _ => return Err(Error::InvalidFrame),
-        }
-    }
-    Err(Error::IncompleteFrame)
+    let line_length = get_line_length(reader)?;
+    let integer_str = reader.copy_to_bytes(line_length - 2);
+    reader.advance(2); // "\r\n"
+    atoi::atoi(&integer_str[..]).ok_or(Error::InvalidFrame)
 }
 
 fn get_line_length<R: Buf>(reader: &mut R) -> Result<usize, Error> {
