@@ -7,9 +7,21 @@
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
 
-pub mod resp;
+mod client;
+pub mod cmd;
+mod connection;
+mod error;
+mod frame;
+pub mod server;
+mod shutdown;
+mod storage;
+
+pub use client::Client;
+pub use cmd::Command;
+pub use connection::Connection;
+pub use error::Error;
+pub use frame::Frame;
+pub use storage::StorageEngine;
 
 /// Default port address of the service
 pub const DEFAULT_PORT: &str = "6379";
-
-pub use resp::{server, Client, StorageEngine};

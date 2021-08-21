@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use tokio::signal;
 
 #[tokio::main]
-pub async fn main() -> Result<(), opal::resp::Error> {
+pub async fn main() -> Result<(), opal::Error> {
     tracing_subscriber::fmt::try_init().unwrap();
 
     let cli = Cli::from_args();

@@ -174,7 +174,7 @@ mod tests {
     use bytes::Bytes;
 
     use super::Connection;
-    use crate::resp::Frame;
+    use crate::Frame;
 
     #[tokio::test]
     async fn write_frame_check_sent_buffer() -> Result<(), Box<dyn std::error::Error>> {

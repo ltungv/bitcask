@@ -2,7 +2,7 @@ use opal::{Client, DEFAULT_PORT};
 use structopt::StructOpt;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), opal::resp::Error> {
+async fn main() -> Result<(), opal::Error> {
     // Enable logging
     tracing_subscriber::fmt::try_init().unwrap();
 

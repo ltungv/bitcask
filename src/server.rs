@@ -9,7 +9,7 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
-use crate::resp::{shutdown::Shutdown, Command};
+use crate::{shutdown::Shutdown, Command};
 
 use super::{Connection, Error, StorageEngine};
 
