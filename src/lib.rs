@@ -4,9 +4,12 @@
 //! Redis serialization protocol (RESP) to communicate with each other. A minimal set of Redis's
 //! commands is supported.
 
-#![deny(missing_debug_implementations, rust_2018_idioms)]
+#![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
 
 pub mod resp;
 
-pub use resp::Client;
+/// Default port address of the service
+pub const DEFAULT_PORT: &str = "6379";
+
+pub use resp::{server, Client, StorageEngine};

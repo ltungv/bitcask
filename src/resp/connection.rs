@@ -11,7 +11,6 @@ use super::{Error, Frame};
 /// Sends and receives [`Frame`] values from the remote peer.
 ///
 /// [`Frame`]: crate::resp::Frame;
-#[derive(Debug)]
 pub struct Connection<S = TcpStream> {
     // wraps a stream inside a BufWriter to reduce the number of write syscalls
     stream: BufWriter<S>,

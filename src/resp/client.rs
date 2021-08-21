@@ -11,7 +11,6 @@ use super::{
 ///
 /// A connection can be established using the [`connect`] function. Once a connection is
 /// established, requests to the server can be send using the corresponding methods of `Client`.
-#[derive(Debug)]
 pub struct Client {
     conn: Connection,
 }

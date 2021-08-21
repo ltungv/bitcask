@@ -11,7 +11,7 @@ pub use del::Del;
 pub use get::Get;
 pub use set::Set;
 
-use super::{Error, Frame};
+use super::{shutdown::Shutdown, Connection, Error, Frame, StorageEngine};
 
 /// Enumeration of all the supported Redis commands. Each commands
 /// will have an associated struct that contains its arguments' data
@@ -23,6 +23,26 @@ pub enum Command {
     Get(Get),
     /// SET key value
     Set(Set),
+}
+
+impl Command {
+    /// Applies the command to the underlying storage and sends back
+    /// a response through the connection.
+    ///
+    /// Passing a `Shutdown` allows the function to finish its execution
+    /// when the server is shutting down.
+    pub async fn apply(
+        self,
+        storage: &StorageEngine,
+        connection: &mut Connection,
+        _shutdown: &mut Shutdown,
+    ) -> Result<(), Error> {
+        match self {
+            Command::Del(cmd) => cmd.apply(storage, connection).await,
+            Command::Get(cmd) => cmd.apply(storage, connection).await,
+            Command::Set(cmd) => cmd.apply(storage, connection).await,
+        }
+    }
 }
 
 impl TryFrom<Frame> for Command {

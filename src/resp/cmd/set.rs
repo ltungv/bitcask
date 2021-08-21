@@ -1,6 +1,7 @@
 use bytes::Bytes;
+use tracing::debug;
 
-use crate::resp::Error;
+use crate::resp::{Connection, Error, Frame, StorageEngine};
 
 use super::CommandParser;
 
@@ -43,7 +44,27 @@ impl Set {
         if !parser.finish() {
             return Err(Error::InvalidFrame);
         }
-
         Ok(Self { key, value })
+    }
+
+    /// Apply the command to the specified [`StorageEngine`] instance.
+    ///
+    /// [`StorageEngine`]: crate::StorageEngine;
+    #[tracing::instrument(skip(self, storage, connection))]
+    pub async fn apply(
+        self,
+        storage: &StorageEngine,
+        connection: &mut Connection,
+    ) -> Result<(), Error> {
+        // Set the key's value
+        storage.set(&self.key, self.value);
+
+        // Responding OK
+        let response = Frame::SimpleString("OK".to_string());
+        debug!(?response);
+
+        // Write the response to the client
+        connection.write_frame(&response).await.unwrap();
+        Ok(())
     }
 }

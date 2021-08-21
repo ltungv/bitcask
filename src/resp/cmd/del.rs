@@ -1,4 +1,6 @@
-use crate::resp::Error;
+use tracing::debug;
+
+use crate::resp::{Connection, Error, Frame, StorageEngine};
 
 use super::CommandParser;
 
@@ -45,5 +47,32 @@ impl Del {
             return Err(Error::InvalidFrame);
         }
         Ok(Self { keys })
+    }
+
+    /// Apply the command to the specified [`StorageEngine`] instance.
+    ///
+    /// [`StorageEngine`]: crate::StorageEngine;
+    #[tracing::instrument(skip(self, storage, connection))]
+    pub async fn apply(
+        self,
+        storage: &StorageEngine,
+        connection: &mut Connection,
+    ) -> Result<(), Error> {
+        // Set the key's value
+        let response = {
+            let mut count = 0;
+            for k in &self.keys {
+                if storage.del(k).is_some() {
+                    count += 1;
+                }
+            }
+            Frame::Integer(count)
+        };
+
+        debug!(?response);
+
+        // Write the response to the client
+        connection.write_frame(&response).await.unwrap();
+        Ok(())
     }
 }

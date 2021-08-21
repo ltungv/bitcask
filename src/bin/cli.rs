@@ -1,4 +1,4 @@
-use opal::Client;
+use opal::{Client, DEFAULT_PORT};
 use structopt::StructOpt;
 
 #[tokio::main(flavor = "current_thread")]
@@ -45,7 +45,7 @@ struct ClientCli {
     #[structopt(
         long = "port",
         about = "Port address of the Redis server",
-        default_value = "6379"
+        default_value = DEFAULT_PORT
     )]
     port: String,
 }
