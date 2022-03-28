@@ -27,7 +27,7 @@ pub struct Server<S: Future> {
     shutdown: S,
 }
 
-impl<S: Future> Server<S> {
+impl<S> Server<S> where S: Future {
     /// Runs the server.
     pub fn new(listener: TcpListener, shutdown: S) -> Self {
         // Ignoring the broadcast received because one can be created by

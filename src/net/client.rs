@@ -89,13 +89,7 @@ impl Client {
         }
 
         // already checked for non-empty slice with the if-condition
-        let (keys_first, keys_rest) = keys.split_first().unwrap();
-
-        // add the optional keys
-        let mut cmd = Del::new(keys_first);
-        for key in keys_rest {
-            cmd.add_key(key);
-        }
+        let cmd = Del::new(keys);
 
         let frame: Frame = cmd.into();
         self.conn.write_frame(&frame).await?;

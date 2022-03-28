@@ -4,8 +4,10 @@ mod del;
 mod get;
 mod set;
 
-use crate::net::{Connection, Error, Frame, Shutdown};
-use crate::storage::StorageEngine;
+use crate::{
+    net::{Connection, Error, Frame, Shutdown},
+    storage::StorageEngine,
+};
 use bytes::Bytes;
 pub use del::Del;
 pub use get::Get;
@@ -120,7 +122,7 @@ impl CommandParser {
     }
 
     /// Ensure there are no more values
-    pub(crate) fn finish(&mut self) -> bool {
+    pub fn finish(&mut self) -> bool {
         self.frames.next().is_none()
     }
 }
