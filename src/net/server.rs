@@ -1,7 +1,11 @@
 //! Asynchronous server for the storage engine that communicates with RESP protocol.
 
+use super::{Connection, Error};
+use crate::{
+    net::{cmd::Command, Shutdown},
+    storage::StorageEngine,
+};
 use std::{convert::TryFrom, future::Future, sync::Arc, time::Duration};
-
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{broadcast, mpsc, Semaphore},
@@ -9,9 +13,75 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
-use crate::{shutdown::Shutdown, Command};
+/// Max number of concurrent connections that can be served by the server.
+const MAX_CONNECTIONS: usize = 128;
 
-use super::{Connection, Error, StorageEngine};
+/// Max number of seconds to wait for when retrying to accept a new connection.
+/// The value is in second.
+const MAX_BACKOFF: u64 = 64;
+
+/// Provide methods and hold states for a Redis server. The server will exist when `shutdown`
+/// finishes, or when there's an error.
+pub struct Server<S: Future> {
+    ctx: Context,
+    shutdown: S,
+}
+
+impl<S: Future> Server<S> {
+    /// Runs the server.
+    pub fn new(listener: TcpListener, shutdown: S) -> Self {
+        // Ignoring the broadcast received because one can be created by
+        // calling `subscribe()` on the `Sender`
+        let (notify_shutdown, _) = broadcast::channel(1);
+        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
+
+        let ctx = Context {
+            storage: Default::default(),
+            listener,
+            limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            notify_shutdown,
+            shutdown_complete_rx,
+            shutdown_complete_tx,
+        };
+
+        Self { ctx, shutdown }
+    }
+
+    /// Runs the server that exits when `shutdown` finishes, or when there's
+    /// an error.
+    pub async fn run(mut self) {
+        // Concurrently run the tasks and blocks the current task until
+        // one of the running tasks finishes. The block that is associated
+        // with the task gets to run, when the task is the first to finish.
+        // Under normal circumstances, this blocks until `shutdown` finishes.
+        tokio::select! {
+            result = self.ctx.listen() => {
+                if let Err(err) = result {
+                    // The server has been failing to accept inbound connections
+                    // for multiple times, so it's giving up and shutting down.
+                    // Error occured while handling individual connection don't
+                    // propagate further.
+                    error!(cause = %err, "failed to accept");
+                }
+            }
+            _ = self.shutdown => {
+                info!("shutting down");
+            }
+        }
+
+        // Dropping this so tasks that have called `subscribe()` will be notified for
+        // shutdown and can gracefully exit.
+        drop(self.ctx.notify_shutdown);
+
+        // Dropping this so there's no dangling `Sender`. Otherwise, awaiting on the
+        // channel's received will block forever because we still holding the last
+        // sender instance.
+        drop(self.ctx.shutdown_complete_tx);
+
+        // Awaiting for all active connections to finish processing.
+        self.ctx.shutdown_complete_rx.recv().await;
+    }
+}
 
 /// The server's runtime state that is shared across all connections.
 /// This is also in charge of listening for new inbound connections.
@@ -69,64 +139,6 @@ struct Handler {
     // Signals that the handler finishes executing.
     _shutdown_complete: mpsc::Sender<()>,
 }
-
-const MAX_CONNECTIONS: usize = 128;
-
-/// Runs the server that exits when `shutdown` finishes, or when there's
-/// an error.
-pub async fn run<S>(listener: TcpListener, shutdown: S)
-where
-    S: Future,
-{
-    // Ignoring the broadcast received because one can be created by
-    // calling `subscribe()` on the `Sender`
-    let (notify_shutdown, _) = broadcast::channel(1);
-    let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
-
-    let mut ctx = Context {
-        storage: Default::default(),
-        listener,
-        limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
-        notify_shutdown,
-        shutdown_complete_rx,
-        shutdown_complete_tx,
-    };
-
-    // Concurrently run the tasks and blocks the current task until
-    // one of the running tasks finishes. The block that is associated
-    // with the task gets to run, when the task is the first to finish.
-    // Under normal circumstances, this blocks until `shutdown` finishes.
-    tokio::select! {
-        result = ctx.listen() => {
-            if let Err(err) = result {
-                // The server has been failing to accept inbound connections
-                // for multiple times, so it's giving up and shutting down.
-                // Error occured while handling individual connection don't
-                // propagate further.
-                error!(cause = %err, "failed to accept");
-            }
-        }
-        _ = shutdown => {
-            info!("shutting down");
-        }
-    }
-
-    // Dropping this so tasks that have called `subscribe()` will be notified for
-    // shutdown and can gracefully exit.
-    drop(ctx.notify_shutdown);
-
-    // Dropping this so there's no dangling `Sender`. Otherwise, awaiting on the
-    // channel's received will block forever because we still holding the last
-    // sender instance.
-    drop(ctx.shutdown_complete_tx);
-
-    // Awaiting for all active connections to finish processing.
-    ctx.shutdown_complete_rx.recv().await;
-}
-
-// Max number of seconds to wait for when retrying to accept a new connection.
-// The value is in second.
-const MAX_BACKOFF: u64 = 64;
 
 impl Context {
     async fn listen(&mut self) -> Result<(), Error> {

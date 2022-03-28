@@ -1,12 +1,11 @@
 //! Data structures and functions for parsing and representing values from RESP as
 //! message frame a network environment
 
-use bytes::{Buf, Bytes};
-
 use super::{
     cmd::{Del, Get, Set},
     Error,
 };
+use bytes::{Buf, Bytes};
 
 const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
 
@@ -112,10 +111,12 @@ impl From<Get> for Frame {
 
 impl From<Set> for Frame {
     fn from(cmd: Set) -> Self {
+        let key = cmd.key().to_string();
+        let val = cmd.value();
         Self::Array(vec![
             Self::BulkString("SET".into()),
-            Self::BulkString(cmd.key.into()),
-            Self::BulkString(cmd.value),
+            Self::BulkString(key.into()),
+            Self::BulkString(val),
         ])
     }
 }

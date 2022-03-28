@@ -1,12 +1,10 @@
-use std::io::{Cursor, Write};
-
+use super::{Error, Frame};
 use bytes::{Buf, BytesMut};
+use std::io::{Cursor, Write};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     net::TcpStream,
 };
-
-use super::{Error, Frame};
 
 /// Sends and receives [`Frame`] values from the remote peer.
 ///
@@ -103,7 +101,7 @@ where
         self.stream.write_all(b"\r\n").await?;
 
         for item in items {
-            self.write_single_value(&item).await?;
+            self.write_single_value(item).await?;
         }
         Ok(())
     }
@@ -169,12 +167,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
+    use super::*;
     use bytes::Bytes;
-
-    use super::Connection;
-    use crate::Frame;
+    use std::io::Cursor;
 
     #[tokio::test]
     async fn write_frame_check_sent_buffer() -> Result<(), Box<dyn std::error::Error>> {

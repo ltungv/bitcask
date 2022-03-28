@@ -1,9 +1,10 @@
+//! Implementations for the underlying storage engine
+
+use bytes::Bytes;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-
-use bytes::Bytes;
 
 /// A type alias for a our database type
 pub struct StorageEngine {

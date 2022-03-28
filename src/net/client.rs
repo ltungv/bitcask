@@ -1,11 +1,10 @@
-use bytes::Bytes;
-use tokio::net::{TcpStream, ToSocketAddrs};
-use tracing::debug;
-
 use super::{
     cmd::{Del, Get, Set},
     Connection, Error, Frame,
 };
+use bytes::Bytes;
+use tokio::net::{TcpStream, ToSocketAddrs};
+use tracing::debug;
 
 /// Provide methods and hold states for manging a connection to a Redis server.
 ///

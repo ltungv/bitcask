@@ -1,8 +1,10 @@
 use tracing::debug;
 
-use crate::{Connection, Error, Frame, StorageEngine};
-
 use super::CommandParser;
+use crate::{
+    net::{Connection, Error, Frame},
+    storage::StorageEngine,
+};
 
 /// Arguments for for GET command
 #[derive(Debug)]

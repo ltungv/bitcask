@@ -1,12 +1,13 @@
-use opal::{Client, DEFAULT_PORT};
+use opal::net::Client;
+use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), opal::Error> {
+async fn main() -> Result<(), opal::net::Error> {
     // Enable logging
     tracing_subscriber::fmt::try_init().unwrap();
 
-    let opt = ClientCli::from_args();
+    let opt = Cli::from_args();
     let addr = format!("{}:{}", opt.host, opt.port);
     let mut client = Client::connect(addr).await?;
 
@@ -31,7 +32,8 @@ async fn main() -> Result<(), opal::Error> {
 }
 
 #[derive(StructOpt)]
-struct ClientCli {
+#[structopt(name = "opal", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "A key value store client")]
+struct Cli {
     #[structopt(subcommand)]
     cmd: Command,
 
@@ -40,14 +42,14 @@ struct ClientCli {
         about = "Host address of the Redis server",
         default_value = "127.0.0.1"
     )]
-    host: String,
+    host: Ipv4Addr,
 
     #[structopt(
         long = "port",
         about = "Port address of the Redis server",
-        default_value = DEFAULT_PORT
+        default_value = "6379"
     )]
-    port: String,
+    port: u16,
 }
 
 #[derive(StructOpt)]

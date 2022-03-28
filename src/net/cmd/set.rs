@@ -1,17 +1,18 @@
+use super::CommandParser;
+use crate::{
+    net::{Connection, Error, Frame},
+    storage::StorageEngine,
+};
 use bytes::Bytes;
 use tracing::debug;
-
-use crate::{Connection, Error, Frame, StorageEngine};
-
-use super::CommandParser;
 
 /// Arguments for SET command
 #[derive(Debug)]
 pub struct Set {
     /// The key to set a value to
-    pub key: String,
+    key: String,
     /// The value to be set
-    pub value: Bytes,
+    value: Bytes,
 }
 
 impl Set {

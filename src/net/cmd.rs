@@ -4,14 +4,13 @@ mod del;
 mod get;
 mod set;
 
-use std::convert::TryFrom;
-
+use crate::net::{Connection, Error, Frame, Shutdown};
+use crate::storage::StorageEngine;
 use bytes::Bytes;
 pub use del::Del;
 pub use get::Get;
 pub use set::Set;
-
-use super::{shutdown::Shutdown, Connection, Error, Frame, StorageEngine};
+use std::convert::TryFrom;
 
 /// Enumeration of all the supported Redis commands. Each commands
 /// will have an associated struct that contains its arguments' data
