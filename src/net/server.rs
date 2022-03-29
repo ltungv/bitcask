@@ -22,12 +22,12 @@ const MAX_BACKOFF: u64 = 64;
 
 /// Provide methods and hold states for a Redis server. The server will exist when `shutdown`
 /// finishes, or when there's an error.
-pub struct Server<S: Future> {
+pub struct Server<S> {
     ctx: Context,
     shutdown: S,
 }
 
-impl<S> Server<S> where S: Future {
+impl<S> Server<S> {
     /// Runs the server.
     pub fn new(listener: TcpListener, shutdown: S) -> Self {
         // Ignoring the broadcast received because one can be created by
@@ -46,7 +46,12 @@ impl<S> Server<S> where S: Future {
 
         Self { ctx, shutdown }
     }
+}
 
+impl<S> Server<S>
+where
+    S: Future,
+{
     /// Runs the server that exits when `shutdown` finishes, or when there's
     /// an error.
     pub async fn run(mut self) {
