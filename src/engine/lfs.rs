@@ -82,19 +82,14 @@ impl KvStore {
         let (writer, reader) = create_log(&path, gen)?;
         readers.insert(gen, reader);
 
-        let path = Arc::new(path.as_ref().to_path_buf());
-        let index = Arc::new(index);
-
         let r_context = ReadContext {
-            path: Arc::clone(&path),
-            index: Arc::clone(&index),
+            path: Arc::new(path.as_ref().to_path_buf()),
+            index: Arc::new(index),
             merge_gen: Arc::new(AtomicU64::new(0)),
             readers: RefCell::new(readers),
         };
 
         let w_context = WriteContext {
-            path: Arc::clone(&path),
-            index: Arc::clone(&index),
             r_context: r_context.clone(),
             writer,
             gen,
@@ -139,8 +134,6 @@ impl KeyValueStore for KvStore {
 /// A database's writer that updates on-disk files and maintains consistent index to those files
 #[derive(Debug)]
 struct WriteContext {
-    path: Arc<PathBuf>,
-    index: Arc<DashMap<String, LogIndex>>,
     r_context: ReadContext,
     writer: BufSeekWriter<File>,
     gen: u64,
@@ -159,7 +152,7 @@ impl WriteContext {
             pos,
             len: self.writer.pos - pos,
         };
-        if let Some(prev_index) = self.index.insert(key, log_index) {
+        if let Some(prev_index) = self.r_context.index.insert(key, log_index) {
             self.garbage += prev_index.len;
             if self.garbage > GARBAGE_THRESHOLD {
                 self.merge()?;
@@ -169,7 +162,7 @@ impl WriteContext {
     }
 
     fn remove(&mut self, key: &str) -> Result<(), Error> {
-        if !self.index.contains_key(key) {
+        if !self.r_context.index.contains_key(key) {
             return Err(Error::from(ErrorKind::KeyNotFound));
         }
 
@@ -177,7 +170,7 @@ impl WriteContext {
         bincode::serialize_into(&mut self.writer, &log_entry)?;
         self.writer.flush()?;
 
-        if let Some((_, prev_index)) = self.index.remove(key) {
+        if let Some((_, prev_index)) = self.r_context.index.remove(key) {
             self.garbage += prev_index.len;
             if self.garbage > GARBAGE_THRESHOLD {
                 self.merge()?;
@@ -190,15 +183,16 @@ impl WriteContext {
         // Copy 2 new logs, one for merging and one for the new active log
         let merge_gen = self.gen + 1;
         let new_gen = self.gen + 2;
-        let (mut merged_writer, merged_reader) = create_log(self.path.as_ref(), merge_gen)?;
-        let (writer, reader) = create_log(self.path.as_ref(), new_gen)?;
+        let (mut merged_writer, merged_reader) =
+            create_log(self.r_context.path.as_ref(), merge_gen)?;
+        let (writer, reader) = create_log(self.r_context.path.as_ref(), new_gen)?;
 
         // Copy data to the merge log and update the index
         let mut readers = self.r_context.readers.borrow_mut();
-        for mut log_index in self.index.iter_mut() {
+        for mut log_index in self.r_context.index.iter_mut() {
             let reader = readers
                 .entry(log_index.gen)
-                .or_insert(open_log(self.path.as_ref(), log_index.gen)?);
+                .or_insert(open_log(self.r_context.path.as_ref(), log_index.gen)?);
 
             reader.seek(SeekFrom::Start(log_index.pos))?;
             let mut entry_reader = reader.take(log_index.len);
@@ -221,10 +215,10 @@ impl WriteContext {
         self.r_context.merge_gen.store(merge_gen, Ordering::SeqCst);
 
         // remove stale log files
-        let prev_gens = previous_gens(self.path.as_ref())?;
+        let prev_gens = previous_gens(self.r_context.path.as_ref())?;
         let stale_gens = prev_gens.iter().filter(|&&gen| gen < merge_gen);
         for gen in stale_gens {
-            let log_path = self.path.join(format!("gen-{}.log", gen));
+            let log_path = self.r_context.path.join(format!("gen-{}.log", gen));
             fs::remove_file(log_path)?;
         }
 
