@@ -39,6 +39,7 @@ impl std::fmt::Display for Error {
             Repr::FromUtf8Error(ref e) => write!(f, "{}", e),
             Repr::IoError(ref e) => write!(f, "{}", e),
             Repr::BincodeError(ref e) => write!(f, "{}", e),
+            Repr::JoinError(ref e) => write!(f, "{}", e),
         }
     }
 }
@@ -71,6 +72,14 @@ impl From<bincode::Error> for Error {
     fn from(err: bincode::Error) -> Self {
         Self {
             repr: Repr::BincodeError(err),
+        }
+    }
+}
+
+impl From<tokio::task::JoinError> for Error {
+    fn from(err: tokio::task::JoinError) -> Self {
+        Self {
+            repr: Repr::JoinError(err),
         }
     }
 }
@@ -117,8 +126,10 @@ enum Repr {
     FromUtf8Error(std::string::FromUtf8Error),
     /// Error from I/O operations
     IoError(std::io::Error),
-    /// Bincode error
+    /// Bincode serialization/deserialization error
     BincodeError(bincode::Error),
+    /// Asynchronous task could not complete
+    JoinError(tokio::task::JoinError),
 }
 
 #[derive(Debug)]

@@ -63,7 +63,7 @@ impl Set {
         connection: &mut Connection,
     ) -> Result<(), Error> {
         // Set the key's value
-        storage.set(self.key, self.value)?;
+        tokio::task::spawn_blocking(move || storage.set(self.key, self.value)).await??;
 
         // Responding OK
         let response = Frame::SimpleString("OK".to_string());

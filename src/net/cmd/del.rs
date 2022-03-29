@@ -53,7 +53,7 @@ impl Del {
         connection: &mut Connection,
     ) -> Result<(), Error> {
         // Set the key's value
-        let response = {
+        let count = tokio::task::spawn_blocking(move || {
             let mut count = 0;
             for k in &self.keys {
                 match storage.del(k) {
@@ -62,9 +62,12 @@ impl Del {
                     Err(e) => return Err(e),
                 }
             }
-            Frame::Integer(count)
-        };
+            Ok(count)
+        })
+        .await??;
 
+        // Responding with the number of deletions
+        let response = Frame::Integer(count);
         debug!(?response);
 
         // Write the response to the client
