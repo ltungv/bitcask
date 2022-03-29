@@ -230,7 +230,7 @@ where
     /// it reaches a safe state, at which point it is terminated.
     #[tracing::instrument(skip(self))]
     async fn run(&mut self) -> Result<(), Error> {
-        // Keeps ingesting frames when not the server is still running
+        // Keeps ingesting frames when the server is still running
         while !self.shutdown.is_shutdown() {
             // Awaiting for a shutdown event or a new frame
             let maybe_frame = tokio::select! {

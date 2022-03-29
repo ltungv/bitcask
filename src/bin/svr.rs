@@ -1,6 +1,7 @@
 use opal::{
     engine::{self, InMemoryStorage, KvStore},
     net::Server,
+    telemetry::{get_subscriber, init_subscriber},
 };
 use std::{env, fs, net::IpAddr, path};
 use structopt::StructOpt;
@@ -9,13 +10,14 @@ use tokio::signal;
 
 #[tokio::main]
 pub async fn main() -> Result<(), opal::error::Error> {
-    tracing_subscriber::fmt::try_init().unwrap();
+    // Setup global `tracing` subscriber
+    let subscriber = get_subscriber("opald".into(), "info".into(), std::io::stdout);
+    init_subscriber(subscriber);
 
     let cli = Cli::from_args();
 
     // Bind a TCP listener
     let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
-
     match cli.typ {
         engine::Type::LFS => {
             let db_dir = cli.path.unwrap_or(env::current_dir()?);

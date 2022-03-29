@@ -1,17 +1,20 @@
-use opal::net::Client;
+use opal::{
+    net::Client,
+    telemetry::{get_subscriber, init_subscriber},
+};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), opal::error::Error> {
-    // Enable logging
-    tracing_subscriber::fmt::try_init().unwrap();
+    // Setup global `tracing` subscriber
+    let subscriber = get_subscriber("opal".into(), "info".into(), std::io::stdout);
+    init_subscriber(subscriber);
 
-    let opt = Cli::from_args();
-    let addr = format!("{}:{}", opt.host, opt.port);
-    let mut client = Client::connect(addr).await?;
+    let cli = Cli::from_args();
 
-    match opt.cmd {
+    let mut client = Client::connect(format!("{}:{}", cli.host, cli.port)).await?;
+    match cli.cmd {
         Command::Set { key, value } => {
             client.set(&key, value.into()).await?;
             println!("\"OK\"");
@@ -28,6 +31,7 @@ async fn main() -> Result<(), opal::error::Error> {
             println!("(integer) {}", n_deleted);
         }
     }
+
     Ok(())
 }
 
