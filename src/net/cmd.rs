@@ -5,8 +5,9 @@ mod get;
 mod set;
 
 use crate::{
-    net::{Connection, Error, Frame, Shutdown},
     engine::KeyValueStore,
+    error::{Error, ErrorKind},
+    net::{Connection, Frame, Shutdown},
 };
 use bytes::Bytes;
 pub use del::Del;
@@ -50,13 +51,14 @@ impl TryFrom<Frame> for Command {
     type Error = Error;
 
     fn try_from(frame: Frame) -> Result<Self, Self::Error> {
-        let mut parser = CommandParser::new(frame).ok_or(Error::InvalidFrame)?;
+        let mut parser =
+            CommandParser::new(frame).ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?;
         match parser.get_bytes()? {
             Some(b) if "DEL" == b => Ok(Command::Del(Del::parse(parser)?)),
             Some(b) if "GET" == b => Ok(Command::Get(Get::parse(parser)?)),
             Some(b) if "SET" == b => Ok(Command::Set(Set::parse(parser)?)),
-            Some(_) => Err(Error::UnexpectedFrame), // unknown or unsupported command
-            _ => Err(Error::InvalidFrame),          // frame contains no data
+            Some(_) => Err(ErrorKind::UnexpectedFrame.into()), // unknown or unsupported command
+            _ => Err(ErrorKind::InvalidFrame.into()),          // frame contains no data
         }
     }
 }
@@ -91,7 +93,7 @@ impl CommandParser {
     pub fn get_string(&mut self) -> Result<Option<String>, Error> {
         match self.frames.next() {
             Some(Frame::BulkString(s)) => Ok(Some(String::from_utf8(Vec::from(&s[..]))?)),
-            Some(_) => Err(Error::UnexpectedFrame),
+            Some(_) => Err(ErrorKind::UnexpectedFrame.into()),
             None => Ok(None),
         }
     }
@@ -103,7 +105,7 @@ impl CommandParser {
     pub fn get_bytes(&mut self) -> Result<Option<Bytes>, Error> {
         match self.frames.next() {
             Some(Frame::BulkString(s)) => Ok(Some(s)),
-            Some(_) => Err(Error::UnexpectedFrame),
+            Some(_) => Err(ErrorKind::UnexpectedFrame.into()),
             None => Ok(None),
         }
     }
@@ -115,8 +117,10 @@ impl CommandParser {
     /// there's no value left.
     pub fn get_integer(&mut self) -> Result<Option<i64>, Error> {
         match self.frames.next() {
-            Some(Frame::BulkString(s)) => Ok(Some(atoi::atoi(&s[..]).ok_or(Error::InvalidFrame)?)),
-            Some(_) => Err(Error::UnexpectedFrame),
+            Some(Frame::BulkString(s)) => Ok(Some(
+                atoi::atoi(&s[..]).ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?,
+            )),
+            Some(_) => Err(ErrorKind::UnexpectedFrame.into()),
             None => Ok(None),
         }
     }

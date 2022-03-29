@@ -1,4 +1,5 @@
-use super::{Error, KeyValueStore};
+use super::KeyValueStore;
+use crate::error::{Error, ErrorKind};
 use bytes::Bytes;
 use std::{
     collections::HashMap,
@@ -14,22 +15,29 @@ pub struct InMemoryStorage {
 impl KeyValueStore for InMemoryStorage {
     /// Delete a key from the store. Returns the value of the removed
     /// key, if there's any
-    fn del(&self, key: &str) -> Result<Option<Bytes>, Error> {
+    fn del(&self, key: &str) -> Result<(), Error> {
         let mut map = self.inner.lock().unwrap();
-        Ok(map.remove(key))
+        match map.remove(key) {
+            Some(_) => Ok(()),
+            None => Err(Error::from(ErrorKind::KeyNotFound)),
+        }
     }
 
     /// Get the value of a key from the store.
-    fn get(&self, key: &str) -> Result<Option<Bytes>, Error> {
+    fn get(&self, key: &str) -> Result<Bytes, Error> {
         let map = self.inner.lock().unwrap();
-        Ok(map.get(key).cloned())
+        match map.get(key) {
+            Some(v) => Ok(v.clone()),
+            None => Err(Error::from(ErrorKind::KeyNotFound)),
+        }
     }
 
     /// Sets the value to a key. Returns the previous value of the key,
     /// if there's any.
-    fn set(&self, key: &str, value: Bytes) -> Result<Option<Bytes>, Error> {
+    fn set(&self, key: String, value: Bytes) -> Result<(), Error> {
         let mut map = self.inner.lock().unwrap();
-        Ok(map.insert(key.to_string(), value))
+        map.insert(key, value);
+        Ok(())
     }
 }
 

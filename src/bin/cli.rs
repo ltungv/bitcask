@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), opal::net::Error> {
+async fn main() -> Result<(), opal::error::Error> {
     // Enable logging
     tracing_subscriber::fmt::try_init().unwrap();
 

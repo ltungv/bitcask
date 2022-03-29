@@ -1,23 +1,36 @@
-use opal::{engine::InMemoryStorage,net::Server};
-use std::net::IpAddr;
+use opal::{
+    engine::{self, InMemoryStorage, KvStore},
+    net::Server,
+};
+use std::{env, fs, net::IpAddr, path};
 use structopt::StructOpt;
 use tokio::net::TcpListener;
 use tokio::signal;
 
 #[tokio::main]
-pub async fn main() -> Result<(), opal::net::Error> {
+pub async fn main() -> Result<(), opal::error::Error> {
     tracing_subscriber::fmt::try_init().unwrap();
 
     let cli = Cli::from_args();
-    let port = cli.port;
-    let host = cli.host;
 
     // Bind a TCP listener
-    let listener = TcpListener::bind(&format!("{}:{}", host, port)).await?;
+    let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
 
-    let storage = InMemoryStorage::default();
-    let server = Server::new(listener, storage, signal::ctrl_c());
-    server.run().await;
+    match cli.typ {
+        engine::Type::LFS => {
+            let db_dir = cli.path.unwrap_or(env::current_dir()?);
+            fs::create_dir_all(&db_dir)?;
+
+            let storage = KvStore::open(&db_dir)?;
+            let server = Server::new(listener, storage, signal::ctrl_c());
+            server.run().await;
+        }
+        engine::Type::Memory => {
+            let storage = InMemoryStorage::default();
+            let server = Server::new(listener, storage, signal::ctrl_c());
+            server.run().await;
+        }
+    }
 
     Ok(())
 }
@@ -38,4 +51,14 @@ struct Cli {
         default_value = "6379"
     )]
     port: u16,
+
+    #[structopt(
+        long = "type",
+        about = "The engine used by the key-value store",
+        default_value = "lfs"
+    )]
+    typ: engine::Type,
+
+    #[structopt(long = "path", about = "Path to the directory containing the data")]
+    path: Option<path::PathBuf>,
 }

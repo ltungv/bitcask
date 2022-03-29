@@ -1,7 +1,8 @@
 use super::CommandParser;
 use crate::{
-    net::{Connection, Error, Frame},
     engine::KeyValueStore,
+    error::{Error, ErrorKind},
+    net::{Connection, Frame},
 };
 use bytes::Bytes;
 use tracing::debug;
@@ -39,11 +40,15 @@ impl Set {
 
     /// Get SET command arguments from the command parser
     pub fn parse(mut parser: CommandParser) -> Result<Self, Error> {
-        let key = parser.get_string()?.ok_or(Error::InvalidFrame)?;
-        let value = parser.get_bytes()?.ok_or(Error::InvalidFrame)?;
+        let key = parser
+            .get_string()?
+            .ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?;
+        let value = parser
+            .get_bytes()?
+            .ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?;
 
         if !parser.finish() {
-            return Err(Error::InvalidFrame);
+            return Err(Error::from(ErrorKind::InvalidFrame));
         }
         Ok(Self { key, value })
     }
@@ -52,13 +57,13 @@ impl Set {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply<KV:KeyValueStore>(
+    pub async fn apply<KV: KeyValueStore>(
         self,
         storage: KV,
         connection: &mut Connection,
     ) -> Result<(), Error> {
         // Set the key's value
-        storage.set(&self.key, self.value)?;
+        storage.set(self.key, self.value)?;
 
         // Responding OK
         let response = Frame::SimpleString("OK".to_string());

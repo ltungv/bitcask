@@ -1,4 +1,5 @@
-use super::{Error, Frame};
+use super::Frame;
+use crate::error::{Error, ErrorKind};
 use bytes::{Buf, BytesMut};
 use std::io::{Cursor, Write};
 use tokio::{
@@ -85,7 +86,7 @@ where
                 Ok(Some(frame))
             }
             // Not enough data has been buffered
-            Err(Error::IncompleteFrame) => Ok(None),
+            Err(e) if e.kind() == Some(ErrorKind::IncompleteFrame) => Ok(None),
             // An error was encountered
             Err(e) => Err(e),
         }

@@ -1,7 +1,8 @@
 use super::CommandParser;
 use crate::{
     engine::KeyValueStore,
-    net::{Connection, Error, Frame},
+    error::{Error, ErrorKind},
+    net::{Connection, Frame},
 };
 use tracing::debug;
 
@@ -29,9 +30,11 @@ impl Get {
 
     /// Get GET command arguments from the command parser
     pub fn parse(mut parser: CommandParser) -> Result<Self, Error> {
-        let key = parser.get_string()?.ok_or(Error::InvalidFrame)?;
+        let key = parser
+            .get_string()?
+            .ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?;
         if !parser.finish() {
-            return Err(Error::InvalidFrame);
+            return Err(Error::from(ErrorKind::InvalidFrame));
         }
         Ok(Self { key })
     }
@@ -47,12 +50,10 @@ impl Get {
     ) -> Result<(), Error> {
         // Set the key's value
         let response = {
-            if let Some(value) = storage.get(&self.key)? {
-                // Returns the value as a bulk string
-                Frame::BulkString(value)
-            } else {
-                // Key not found
-                Frame::Null
+            match storage.get(&self.key) {
+                Ok(val) => Frame::BulkString(val),
+                Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => Frame::Null,
+                Err(e) => return Err(e),
             }
         };
 

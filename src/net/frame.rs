@@ -1,10 +1,8 @@
 //! Data structures and functions for parsing and representing values from RESP as
 //! message frame a network environment
 
-use super::{
-    cmd::{Del, Get, Set},
-    Error,
-};
+use super::cmd::{Del, Get, Set};
+use crate::error::{Error, ErrorKind};
 use bytes::{Buf, Bytes};
 
 const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
@@ -49,7 +47,7 @@ impl Frame {
             b':' => Self::integer(reader)?,
             b'$' => Self::bulk_string(reader)?,
             b'*' => Self::array(reader)?,
-            _ => return Err(Error::InvalidFrame),
+            _ => return Err(ErrorKind::InvalidFrame.into()),
         };
         Ok(frame)
     }
@@ -73,7 +71,7 @@ impl Frame {
                 if n >= 0 {
                     let data_len = n as usize + 2; // skip data + '\r\n'
                     if data_len > reader.remaining() {
-                        return Err(Error::IncompleteFrame);
+                        return Err(ErrorKind::IncompleteFrame.into());
                     }
                     reader.advance(data_len);
                 }
@@ -84,7 +82,7 @@ impl Frame {
                     Frame::check(reader)?;
                 }
             }
-            _ => return Err(Error::InvalidFrame),
+            _ => return Err(ErrorKind::InvalidFrame.into()),
         }
         Ok(())
     }
@@ -118,15 +116,15 @@ impl Frame {
             return Ok(Frame::Null);
         }
         if !(0..=MAX_BULK_STRING_LENGTH).contains(&bulk_len) {
-            return Err(Error::InvalidFrame);
+            return Err(ErrorKind::InvalidFrame.into());
         }
 
         let bulk_len = bulk_len as usize;
         if (bulk_len + 2) > reader.remaining() {
-            return Err(Error::IncompleteFrame);
+            return Err(ErrorKind::IncompleteFrame.into());
         }
         if reader.chunk()[bulk_len] != b'\r' || reader.chunk()[bulk_len + 1] != b'\n' {
-            return Err(Error::InvalidFrame);
+            return Err(ErrorKind::InvalidFrame.into());
         }
 
         let bulk_bytes = reader.copy_to_bytes(bulk_len as usize);
@@ -140,7 +138,7 @@ impl Frame {
             return Ok(Frame::Null);
         }
         if array_len < 0 {
-            return Err(Error::InvalidFrame);
+            return Err(ErrorKind::InvalidFrame.into());
         }
 
         let array_len = array_len as usize;
@@ -191,7 +189,7 @@ fn get_integer<R: Buf>(reader: &mut R) -> Result<i64, Error> {
     let line_length = get_line_length(reader)?;
     let integer_str = reader.copy_to_bytes(line_length - 2);
     reader.advance(2); // "\r\n"
-    atoi::atoi(&integer_str[..]).ok_or(Error::InvalidFrame)
+    atoi::atoi(&integer_str[..]).ok_or_else(|| Error::from(ErrorKind::InvalidFrame))
 }
 
 fn get_line_length<R: Buf>(reader: &mut R) -> Result<usize, Error> {
@@ -204,20 +202,20 @@ fn get_line_length<R: Buf>(reader: &mut R) -> Result<usize, Error> {
                 if reader_chunk[i + 1] == b'\n' {
                     return Ok(i + 2);
                 }
-                return Err(Error::InvalidFrame);
+                return Err(ErrorKind::InvalidFrame.into());
             }
             b'\n' => {
-                return Err(Error::InvalidFrame);
+                return Err(ErrorKind::InvalidFrame.into());
             }
             _ => {}
         }
     }
-    Err(Error::IncompleteFrame)
+    Err(ErrorKind::IncompleteFrame.into())
 }
 
 fn get_byte<R: Buf>(reader: &mut R) -> Result<u8, Error> {
     if !reader.has_remaining() {
-        return Err(Error::IncompleteFrame);
+        return Err(ErrorKind::IncompleteFrame.into());
     }
     Ok(reader.get_u8())
 }
@@ -235,12 +233,12 @@ mod tests {
 
     #[test]
     fn parse_simple_string_invalid_carriage_return() {
-        assert_frame_error(b"+OK\r\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b"+OK\r\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
     fn parse_simple_string_invalid_line_feed() {
-        assert_frame_error(b"+OK\n\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b"+OK\n\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
@@ -260,12 +258,12 @@ mod tests {
 
     #[test]
     fn parse_error_invalid_carriage_return() {
-        assert_frame_error(b"-Error test\r\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b"-Error test\r\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
     fn parse_error_invalid_line_feed() {
-        assert_frame_error(b"-Error test\n\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b"-Error test\n\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
@@ -275,22 +273,22 @@ mod tests {
 
     #[test]
     fn parse_integer_invalid_empty_buffer() {
-        assert_frame_error(b":\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b":\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
     fn parse_integer_invalid_non_digit_character() {
-        assert_frame_error(b":nan\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b":nan\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
     fn parse_integer_invalid_value_underflow() {
-        assert_frame_error(b":-9223372036854775809\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b":-9223372036854775809\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
     fn parse_integer_invalid_value_overflow() {
-        assert_frame_error(b":9223372036854775808\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b":9223372036854775808\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
@@ -309,17 +307,17 @@ mod tests {
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix() {
-        assert_frame_error(b"$-2\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b"$-2\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix_too_large() {
-        assert_frame_error(b"$24\r\nhello\r\nworld\r\n", Error::IncompleteFrame);
+        assert_frame_error_kind(b"$24\r\nhello\r\nworld\r\n", ErrorKind::IncompleteFrame);
     }
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix_too_small() {
-        assert_frame_error(b"$6\r\nhello\r\nworld\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b"$6\r\nhello\r\nworld\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
@@ -381,7 +379,7 @@ mod tests {
 
     #[test]
     fn parse_array_length_invalid_length_prefix() {
-        assert_frame_error(b"*-2\r\n", Error::InvalidFrame);
+        assert_frame_error_kind(b"*-2\r\n", ErrorKind::InvalidFrame);
     }
 
     #[test]
@@ -395,15 +393,10 @@ mod tests {
         assert_eq!(frame, expected_frame);
     }
 
-    fn assert_frame_error(input_data: &[u8], expected_err: Error) {
+    fn assert_frame_error_kind(input_data: &[u8], expected_err_kind: ErrorKind) {
         let err = parse_frame(input_data).unwrap_err();
-        let assertion = match (err, expected_err) {
-            (Error::IncompleteFrame, Error::IncompleteFrame) => true,
-            (Error::InvalidFrame, Error::InvalidFrame) => true,
-            (Error::FromUtf8Error(e1), Error::FromUtf8Error(e2)) => e1 == e2,
-            _ => unimplemented!("Unreleated errors"),
-        };
-        assert!(assertion);
+        let err_kind = err.kind().unwrap();
+        assert_eq!(expected_err_kind, err_kind)
     }
 
     fn parse_frame(input_data: &[u8]) -> Result<Frame, Error> {

@@ -9,4 +9,5 @@
 #![warn(missing_docs)]
 
 pub mod engine;
+pub mod error;
 pub mod net;

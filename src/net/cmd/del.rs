@@ -1,7 +1,8 @@
 use super::CommandParser;
 use crate::{
     engine::KeyValueStore,
-    net::{Connection, Error, Frame},
+    error::{Error, ErrorKind},
+    net::{Connection, Frame},
 };
 use tracing::debug;
 
@@ -37,7 +38,7 @@ impl Del {
         }
 
         if keys.is_empty() {
-            return Err(Error::InvalidFrame);
+            return Err(Error::from(ErrorKind::InvalidFrame));
         }
         Ok(Self { keys })
     }
@@ -55,8 +56,10 @@ impl Del {
         let response = {
             let mut count = 0;
             for k in &self.keys {
-                if storage.del(k)?.is_some() {
-                    count += 1;
+                match storage.del(k) {
+                    Ok(_) => count += 1,
+                    Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => continue,
+                    Err(e) => return Err(e),
                 }
             }
             Frame::Integer(count)

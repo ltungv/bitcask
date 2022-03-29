@@ -1,8 +1,9 @@
 //! Asynchronous server for the storage engine that communicates with RESP protocol.
 
-use super::{Connection, Error};
+use super::Connection;
 use crate::{
     engine::KeyValueStore,
+    error::Error,
     net::{cmd::Command, Shutdown},
 };
 use std::{convert::TryFrom, future::Future, sync::Arc, time::Duration};

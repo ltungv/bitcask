@@ -1,7 +1,8 @@
 use super::{
     cmd::{Del, Get, Set},
-    Connection, Error, Frame,
+    Connection, Frame,
 };
+use crate::error::{Error, ErrorKind};
 use bytes::Bytes;
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::debug;
@@ -43,7 +44,7 @@ impl Client {
         match self.read_response().await? {
             Frame::BulkString(s) => Ok(Some(s)), // retrieved key's value
             Frame::Null => Ok(None),             // key does not exist
-            _ => Err(Error::UnexpectedFrame),
+            _ => Err(ErrorKind::UnexpectedFrame.into()),
         }
     }
 
@@ -73,7 +74,7 @@ impl Client {
         // Wait for the response from the server
         match self.read_response().await? {
             Frame::SimpleString(s) if s == "OK" => Ok(()), // suceeded
-            _ => Err(Error::UnexpectedFrame),              // error occured / unsupported reply
+            _ => Err(ErrorKind::UnexpectedFrame.into()),   // error occured / unsupported reply
         }
     }
 
@@ -83,7 +84,8 @@ impl Client {
     #[tracing::instrument(skip(self))]
     pub async fn del(&mut self, keys: &[String]) -> Result<i64, Error> {
         if keys.is_empty() {
-            return Err(Error::CommandFailed(
+            return Err(Error::new(
+                ErrorKind::CommandFailed,
                 "must specify at least 1 key".to_string(),
             ));
         }
@@ -98,7 +100,7 @@ impl Client {
         // Wait for the response from the server
         match self.read_response().await? {
             Frame::Integer(n) => Ok(n),
-            _ => Err(Error::UnexpectedFrame),
+            _ => Err(ErrorKind::UnexpectedFrame.into()),
         }
     }
 
@@ -107,7 +109,7 @@ impl Client {
         debug!(response = ?frame);
 
         match frame {
-            Some(Frame::Error(err)) => Err(Error::CommandFailed(err)),
+            Some(Frame::Error(err)) => Err(Error::new(ErrorKind::CommandFailed, err)),
             Some(frame) => Ok(frame),
             None => {
                 // Server closes socket without sending data
