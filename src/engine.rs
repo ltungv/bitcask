@@ -6,7 +6,7 @@ mod lfs;
 use crate::error::Error;
 use bytes::Bytes;
 pub use inmem::InMemoryStorage;
-pub use lfs::KvStore;
+pub use lfs::LogStructuredHashTable;
 use std::str::FromStr;
 
 /// Define the interface of a key-value store
@@ -29,7 +29,7 @@ pub enum Type {
     /// Log-structure file systems engine
     LFS,
     /// In-memory engine
-    Memory,
+    InMem,
 }
 
 impl FromStr for Type {
@@ -38,7 +38,7 @@ impl FromStr for Type {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().trim() {
             "lfs" => Ok(Self::LFS),
-            "memory" => Ok(Self::Memory),
+            "memory" => Ok(Self::InMem),
             _ => Err("unsupported"),
         }
     }

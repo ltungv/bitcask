@@ -27,7 +27,7 @@ const GARBAGE_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Serialization/Deserialization is done using the `bincode` crate. The crate is chosen mainly
 /// because of its performance.
 #[derive(Debug)]
-pub struct KvStore {
+pub struct LogStructuredHashTable {
     // NOTE: Breaking up the lock
     //
     // # Requirements
@@ -51,7 +51,7 @@ pub struct KvStore {
     r_context: ReadContext,
 }
 
-impl Clone for KvStore {
+impl Clone for LogStructuredHashTable {
     fn clone(&self) -> Self {
         Self {
             w_context: Arc::clone(&self.w_context),
@@ -60,7 +60,7 @@ impl Clone for KvStore {
     }
 }
 
-impl KvStore {
+impl LogStructuredHashTable {
     /// Open the key-value store at the given path and return the store to the caller.
     pub fn open<P>(path: P) -> Result<Self, Error>
     where
@@ -103,7 +103,7 @@ impl KvStore {
     }
 }
 
-impl KeyValueStore for KvStore {
+impl KeyValueStore for LogStructuredHashTable {
     /// # Error
     ///
     /// Error from I/O operations and serialization/deserialization operations will be propagated.

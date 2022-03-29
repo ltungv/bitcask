@@ -1,5 +1,5 @@
 use opal::{
-    engine::{self, InMemoryStorage, KvStore},
+    engine::{self, InMemoryStorage, LogStructuredHashTable},
     net::Server,
     telemetry::{get_subscriber, init_subscriber},
 };
@@ -23,11 +23,11 @@ pub async fn main() -> Result<(), opal::error::Error> {
             let db_dir = cli.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
-            let storage = KvStore::open(&db_dir)?;
+            let storage = LogStructuredHashTable::open(&db_dir)?;
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }
-        engine::Type::Memory => {
+        engine::Type::InMem => {
             let storage = InMemoryStorage::default();
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
