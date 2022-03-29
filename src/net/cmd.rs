@@ -6,7 +6,7 @@ mod set;
 
 use crate::{
     net::{Connection, Error, Frame, Shutdown},
-    storage::StorageEngine,
+    engine::KeyValueStore,
 };
 use bytes::Bytes;
 pub use del::Del;
@@ -32,9 +32,9 @@ impl Command {
     ///
     /// Passing a `Shutdown` allows the function to finish its execution
     /// when the server is shutting down.
-    pub async fn apply(
+    pub async fn apply<KV: KeyValueStore>(
         self,
-        storage: &StorageEngine,
+        storage: KV,
         connection: &mut Connection,
         _shutdown: &mut Shutdown,
     ) -> Result<(), Error> {

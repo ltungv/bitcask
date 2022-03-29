@@ -1,5 +1,4 @@
-//! Implementations for the underlying storage engine
-
+use super::{Error, KeyValueStore};
 use bytes::Bytes;
 use std::{
     collections::HashMap,
@@ -7,44 +6,37 @@ use std::{
 };
 
 /// A type alias for a our database type
-pub struct StorageEngine {
+#[derive(Default)]
+pub struct InMemoryStorage {
     inner: Arc<Mutex<HashMap<String, Bytes>>>,
 }
 
-impl StorageEngine {
+impl KeyValueStore for InMemoryStorage {
     /// Delete a key from the store. Returns the value of the removed
     /// key, if there's any
-    pub fn del(&self, key: &str) -> Option<Bytes> {
+    fn del(&self, key: &str) -> Result<Option<Bytes>, Error> {
         let mut map = self.inner.lock().unwrap();
-        map.remove(key)
+        Ok(map.remove(key))
     }
 
     /// Get the value of a key from the store.
-    pub fn get(&self, key: &str) -> Option<Bytes> {
+    fn get(&self, key: &str) -> Result<Option<Bytes>, Error> {
         let map = self.inner.lock().unwrap();
-        map.get(key).cloned()
+        Ok(map.get(key).cloned())
     }
 
     /// Sets the value to a key. Returns the previous value of the key,
     /// if there's any.
-    pub fn set(&self, key: &str, value: Bytes) -> Option<Bytes> {
+    fn set(&self, key: &str, value: Bytes) -> Result<Option<Bytes>, Error> {
         let mut map = self.inner.lock().unwrap();
-        map.insert(key.to_string(), value)
+        Ok(map.insert(key.to_string(), value))
     }
 }
 
-impl Clone for StorageEngine {
+impl Clone for InMemoryStorage {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl Default for StorageEngine {
-    fn default() -> Self {
-        Self {
-            inner: Default::default(),
         }
     }
 }

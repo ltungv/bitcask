@@ -13,6 +13,8 @@ pub enum Error {
     FromUtf8Error(std::string::FromUtf8Error),
     /// Error from I/O operations
     IoError(std::io::Error),
+    /// Error from the underlying key-value store
+    EngineError(crate::engine::Error),
 }
 
 impl std::error::Error for Error {}
@@ -26,6 +28,7 @@ impl std::fmt::Debug for Error {
             Error::CommandFailed(err) => write!(f, "{:?}", err),
             Error::FromUtf8Error(e) => write!(f, "{:?}", e),
             Error::IoError(e) => write!(f, "{:?}", e),
+            Error::EngineError(e) => write!(f, "{:?}", e),
         }
     }
 }
@@ -39,6 +42,7 @@ impl std::fmt::Display for Error {
             Error::CommandFailed(err) => write!(f, "{}", err),
             Error::FromUtf8Error(e) => write!(f, "{}", e),
             Error::IoError(e) => write!(f, "{}", e),
+            Error::EngineError(e) => write!(f, "{}", e),
         }
     }
 }
@@ -52,5 +56,11 @@ impl From<std::string::FromUtf8Error> for Error {
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Error::IoError(err)
+    }
+}
+
+impl From<crate::engine::Error> for Error {
+    fn from(err: crate::engine::Error) -> Self {
+        Error::EngineError(err)
     }
 }

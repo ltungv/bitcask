@@ -1,4 +1,4 @@
-use opal::net::Server;
+use opal::{engine::InMemoryStorage,net::Server};
 use std::net::IpAddr;
 use structopt::StructOpt;
 use tokio::net::TcpListener;
@@ -15,7 +15,8 @@ pub async fn main() -> Result<(), opal::net::Error> {
     // Bind a TCP listener
     let listener = TcpListener::bind(&format!("{}:{}", host, port)).await?;
 
-    let server = Server::new(listener, signal::ctrl_c());
+    let storage = InMemoryStorage::default();
+    let server = Server::new(listener, storage, signal::ctrl_c());
     server.run().await;
 
     Ok(())

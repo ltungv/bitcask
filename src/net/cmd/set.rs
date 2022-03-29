@@ -1,7 +1,7 @@
 use super::CommandParser;
 use crate::{
     net::{Connection, Error, Frame},
-    storage::StorageEngine,
+    engine::KeyValueStore,
 };
 use bytes::Bytes;
 use tracing::debug;
@@ -52,13 +52,13 @@ impl Set {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply(
+    pub async fn apply<KV:KeyValueStore>(
         self,
-        storage: &StorageEngine,
+        storage: KV,
         connection: &mut Connection,
     ) -> Result<(), Error> {
         // Set the key's value
-        storage.set(&self.key, self.value);
+        storage.set(&self.key, self.value)?;
 
         // Responding OK
         let response = Frame::SimpleString("OK".to_string());

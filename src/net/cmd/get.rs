@@ -1,7 +1,7 @@
 use super::CommandParser;
 use crate::{
+    engine::KeyValueStore,
     net::{Connection, Error, Frame},
-    storage::StorageEngine,
 };
 use tracing::debug;
 
@@ -40,14 +40,14 @@ impl Get {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply(
+    pub async fn apply<KV: KeyValueStore>(
         self,
-        storage: &StorageEngine,
+        storage: KV,
         connection: &mut Connection,
     ) -> Result<(), Error> {
         // Set the key's value
         let response = {
-            if let Some(value) = storage.get(&self.key) {
+            if let Some(value) = storage.get(&self.key)? {
                 // Returns the value as a bulk string
                 Frame::BulkString(value)
             } else {

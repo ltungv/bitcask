@@ -1,7 +1,7 @@
 use super::CommandParser;
 use crate::{
+    engine::KeyValueStore,
     net::{Connection, Error, Frame},
-    storage::StorageEngine,
 };
 use tracing::debug;
 
@@ -46,16 +46,16 @@ impl Del {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply(
+    pub async fn apply<KV: KeyValueStore>(
         self,
-        storage: &StorageEngine,
+        storage: KV,
         connection: &mut Connection,
     ) -> Result<(), Error> {
         // Set the key's value
         let response = {
             let mut count = 0;
             for k in &self.keys {
-                if storage.del(k).is_some() {
+                if storage.del(k)?.is_some() {
                     count += 1;
                 }
             }

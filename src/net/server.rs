@@ -2,8 +2,8 @@
 
 use super::{Connection, Error};
 use crate::{
+    engine::KeyValueStore,
     net::{cmd::Command, Shutdown},
-    storage::StorageEngine,
 };
 use std::{convert::TryFrom, future::Future, sync::Arc, time::Duration};
 use tokio::{
@@ -22,21 +22,21 @@ const MAX_BACKOFF: u64 = 64;
 
 /// Provide methods and hold states for a Redis server. The server will exist when `shutdown`
 /// finishes, or when there's an error.
-pub struct Server<S> {
-    ctx: Context,
+pub struct Server<KV, S> {
+    ctx: Context<KV>,
     shutdown: S,
 }
 
-impl<S> Server<S> {
+impl<KV, S> Server<KV, S> {
     /// Runs the server.
-    pub fn new(listener: TcpListener, shutdown: S) -> Self {
+    pub fn new(listener: TcpListener, storage: KV, shutdown: S) -> Self {
         // Ignoring the broadcast received because one can be created by
         // calling `subscribe()` on the `Sender`
         let (notify_shutdown, _) = broadcast::channel(1);
         let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
         let ctx = Context {
-            storage: Default::default(),
+            storage,
             listener,
             limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
             notify_shutdown,
@@ -48,8 +48,9 @@ impl<S> Server<S> {
     }
 }
 
-impl<S> Server<S>
+impl<KV, S> Server<KV, S>
 where
+    KV: KeyValueStore,
     S: Future,
 {
     /// Runs the server that exits when `shutdown` finishes, or when there's
@@ -90,9 +91,9 @@ where
 
 /// The server's runtime state that is shared across all connections.
 /// This is also in charge of listening for new inbound connections.
-struct Context {
+struct Context<KV> {
     // Database handle
-    storage: StorageEngine,
+    storage: KV,
 
     // The TCP socket for listening for inbound connection
     listener: TcpListener,
@@ -126,26 +127,39 @@ struct Context {
     shutdown_complete_tx: mpsc::Sender<()>,
 }
 
-/// Reads client requests and applies those to the storage.
-struct Handler {
-    // Database handle.
-    storage: StorageEngine,
+impl<KV> Context<KV> {
+    /// Accepts a new connection.
+    ///
+    /// Returns the a [`TcpStream`] on success. Retries with an exponential
+    /// backoff strategy when there's an error. If the backoff time passes
+    /// to maximum allowed time, returns an error.
+    ///
+    /// [`TcpStream`]: tokio::net::TcpStream
+    async fn accept(&mut self) -> Result<TcpStream, Error> {
+        let mut backoff = 1;
+        loop {
+            match self.listener.accept().await {
+                Ok((socket, _)) => return Ok(socket),
+                Err(err) => {
+                    if backoff > MAX_BACKOFF {
+                        return Err(err.into());
+                    }
+                }
+            }
 
-    // Writes and reads frame.
-    connection: Connection,
+            // Wait for `backoff` seconds
+            time::sleep(Duration::from_secs(backoff)).await;
 
-    // The semaphore that granted the permit for this handler.
-    // The handler is in charge of releasing its permit.
-    limit_connections: Arc<Semaphore>,
-
-    // Receives shut down signal.
-    shutdown: Shutdown,
-
-    // Signals that the handler finishes executing.
-    _shutdown_complete: mpsc::Sender<()>,
+            // Doubling the backoff time
+            backoff <<= 1;
+        }
+    }
 }
 
-impl Context {
+impl<KV> Context<KV>
+where
+    KV: KeyValueStore,
+{
     async fn listen(&mut self) -> Result<(), Error> {
         info!("listening for new connections");
 
@@ -181,36 +195,31 @@ impl Context {
             });
         }
     }
-
-    /// Accepts a new connection.
-    ///
-    /// Returns the a [`TcpStream`] on success. Retries with an exponential
-    /// backoff strategy when there's an error. If the backoff time passes
-    /// to maximum allowed time, returns an error.
-    ///
-    /// [`TcpStream`]: tokio::net::TcpStream
-    async fn accept(&mut self) -> Result<TcpStream, Error> {
-        let mut backoff = 1;
-        loop {
-            match self.listener.accept().await {
-                Ok((socket, _)) => return Ok(socket),
-                Err(err) => {
-                    if backoff > MAX_BACKOFF {
-                        return Err(err.into());
-                    }
-                }
-            }
-
-            // Wait for `backoff` seconds
-            time::sleep(Duration::from_secs(backoff)).await;
-
-            // Doubling the backoff time
-            backoff <<= 1;
-        }
-    }
 }
 
-impl Handler {
+/// Reads client requests and applies those to the storage.
+struct Handler<KV> {
+    // Database handle.
+    storage: KV,
+
+    // Writes and reads frame.
+    connection: Connection,
+
+    // The semaphore that granted the permit for this handler.
+    // The handler is in charge of releasing its permit.
+    limit_connections: Arc<Semaphore>,
+
+    // Receives shut down signal.
+    shutdown: Shutdown,
+
+    // Signals that the handler finishes executing.
+    _shutdown_complete: mpsc::Sender<()>,
+}
+
+impl<KV> Handler<KV>
+where
+    KV: KeyValueStore,
+{
     /// Process a single connection.
     ///
     /// Currently, pipelining is not implemented. See for more details at:
@@ -241,14 +250,15 @@ impl Handler {
             let cmd = Command::try_from(frame)?;
             debug!(?cmd);
 
-            cmd.apply(&self.storage, &mut self.connection, &mut self.shutdown)
+            let storage = self.storage.clone();
+            cmd.apply(storage, &mut self.connection, &mut self.shutdown)
                 .await?;
         }
         Ok(())
     }
 }
 
-impl Drop for Handler {
+impl<KV> Drop for Handler<KV> {
     fn drop(&mut self) {
         // Releases the permit that was granted for this handler. Performing this
         // in the `Drop` implementation ensures that the permit is always
