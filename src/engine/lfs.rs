@@ -120,7 +120,7 @@ impl KeyValueStore for LogStructuredHashTable {
     /// Error from I/O operations will be propagated. If the key doesn't exist returns a
     /// `KeyNotFound` error.
     fn del(&self, key: &str) -> Result<(), Error> {
-        self.w_context.lock().unwrap().remove(key)
+        self.w_context.lock().unwrap().del(key)
     }
 }
 
@@ -164,7 +164,7 @@ impl WriteContext {
         Ok(())
     }
 
-    fn remove(&mut self, key: &str) -> Result<(), Error> {
+    fn del(&mut self, key: &str) -> Result<(), Error> {
         if !self.r_context.index.contains_key(key) {
             return Err(Error::from(ErrorKind::KeyNotFound));
         }
@@ -243,19 +243,6 @@ struct ReadContext {
     readers: RefCell<BTreeMap<u64, BufSeekReader<File>>>,
 }
 
-impl Clone for ReadContext {
-    fn clone(&self) -> Self {
-        // The `ReadContext` will be cloned and sent across threads. Each cloned `ReadContext`
-        // will have unique file handles to the log files so that read can happen concurrently
-        Self {
-            path: Arc::clone(&self.path),
-            index: Arc::clone(&self.index),
-            merge_gen: Arc::clone(&self.merge_gen),
-            readers: RefCell::new(BTreeMap::new()),
-        }
-    }
-}
-
 impl ReadContext {
     fn get(&self, key: &str) -> Result<Bytes, Error> {
         match self.index.get(key) {
@@ -299,6 +286,19 @@ impl ReadContext {
         gens.iter().for_each(|&gen| {
             readers.remove(&gen);
         });
+    }
+}
+
+impl Clone for ReadContext {
+    fn clone(&self) -> Self {
+        // The `ReadContext` will be cloned and sent across threads. Each cloned `ReadContext`
+        // will have unique file handles to the log files so that read can happen concurrently
+        Self {
+            path: Arc::clone(&self.path),
+            index: Arc::clone(&self.index),
+            merge_gen: Arc::clone(&self.merge_gen),
+            readers: RefCell::new(BTreeMap::new()),
+        }
     }
 }
 
