@@ -7,6 +7,7 @@ use criterion::{
     Throughput,
 };
 use opal::engine::{self, KeyValueStore};
+use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 use rayon::ThreadPoolBuilder;
 use tempfile::TempDir;
@@ -15,8 +16,8 @@ const ITER: usize = 1000;
 const KEY_SIZE: usize = 1000;
 const VAL_SIZE: usize = 1000;
 
-pub fn concurrent_write_bulk(c: &mut Criterion) {
-    let mut g = c.benchmark_group("concurrent_write_bulk");
+pub fn bench_write(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare_engines_concurrent_write");
     g.throughput(Throughput::Bytes((ITER * (KEY_SIZE + VAL_SIZE)) as u64));
 
     let phys_cpus = num_cpus::get_physical();
@@ -44,8 +45,7 @@ pub fn concurrent_write_bulk(c: &mut Criterion) {
 }
 
 fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Type, usize)) {
-    let mut rng = StdRng::from_seed([0u8; 32]);
-    let kv_pairs = prebuilt_kv_pairs(&mut rng, ITER, KEY_SIZE, VAL_SIZE);
+    let kv_pairs = prebuilt_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
     let pool = ThreadPoolBuilder::new()
         .num_threads(*nthreads)
         .build()
@@ -56,7 +56,7 @@ fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Ty
             pool.install(|| {
                 b.iter_batched(
                     || {
-                        let (engine, tmpdir) = prep_lfs();
+                        let (engine, tmpdir) = get_lfs();
                         (engine, kv_pairs.clone(), tmpdir)
                     },
                     concurrent_write_bulk_bench_iter,
@@ -68,7 +68,7 @@ fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Ty
             pool.install(|| {
                 b.iter_batched(
                     || {
-                        let (engine, tmpdir) = prep_sled();
+                        let (engine, tmpdir) = get_sled();
                         (engine, kv_pairs.clone(), tmpdir)
                     },
                     concurrent_write_bulk_bench_iter,
@@ -80,7 +80,7 @@ fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Ty
             pool.install(|| {
                 b.iter_batched(
                     || {
-                        let (engine, tmpdir) = prep_inmem();
+                        let (engine, tmpdir) = get_inmem();
                         (engine, kv_pairs.clone(), tmpdir)
                     },
                     concurrent_write_bulk_bench_iter,
@@ -104,8 +104,8 @@ fn concurrent_write_bulk_bench_iter<E>(
     });
 }
 
-pub fn concurrent_read_bulk(c: &mut Criterion) {
-    let mut g = c.benchmark_group("concurrent_read_bulk");
+pub fn bench_read(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare_engines_concurrent_read");
     g.throughput(Throughput::Bytes((ITER * (KEY_SIZE)) as u64));
 
     let phys_cpus = num_cpus::get_physical();
@@ -133,16 +133,13 @@ pub fn concurrent_read_bulk(c: &mut Criterion) {
 }
 
 fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Type, usize)) {
-    let mut rng = StdRng::from_seed([0u8; 32]);
-    let kv_pairs = prebuilt_kv_pairs(&mut rng, ITER, KEY_SIZE, VAL_SIZE);
-    let pool = ThreadPoolBuilder::new()
-        .num_threads(*nthreads)
-        .build()
-        .unwrap();
+    let kv_pairs = prebuilt_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
+    let pool = get_threadpool(*nthreads);
 
+    let mut rng = StdRng::from_seed([0u8; 32]);
     match *engine {
         engine::Type::LFS => {
-            let (engine, _tmpdir) = prep_lfs();
+            let (engine, _tmpdir) = get_lfs();
             kv_pairs
                 .iter()
                 .cloned()
@@ -161,7 +158,7 @@ fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Typ
             });
         }
         engine::Type::Sled => {
-            let (engine, _tmpdir) = prep_sled();
+            let (engine, _tmpdir) = get_sled();
             kv_pairs
                 .iter()
                 .cloned()
@@ -180,7 +177,7 @@ fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Typ
             });
         }
         engine::Type::InMem => {
-            let (engine, _tmpdir) = prep_inmem();
+            let (engine, _tmpdir) = get_inmem();
             kv_pairs
                 .iter()
                 .cloned()
@@ -213,5 +210,9 @@ where
     })
 }
 
+criterion_group!(
+    name = benches;
+    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    targets = bench_write, bench_read
+);
 criterion_main!(benches);
-criterion_group!(benches, concurrent_write_bulk, concurrent_read_bulk,);
