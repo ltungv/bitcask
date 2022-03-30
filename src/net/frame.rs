@@ -42,11 +42,11 @@ impl Frame {
     /// [`Error::Incomplete`]: crate::resp::frame::Error::Incomplete
     pub fn parse<R: Buf>(reader: &mut R) -> Result<Self, Error> {
         let frame = match get_byte(reader)? {
-            b'+' => Self::simple_string(reader)?,
-            b'-' => Self::error(reader)?,
-            b':' => Self::integer(reader)?,
-            b'$' => Self::bulk_string(reader)?,
-            b'*' => Self::array(reader)?,
+            b'+' => parse_simple_string(reader)?,
+            b'-' => parse_error(reader)?,
+            b':' => parse_integer(reader)?,
+            b'$' => parse_bulk_string(reader)?,
+            b'*' => parse_array(reader)?,
             _ => return Err(ErrorKind::InvalidFrame.into()),
         };
         Ok(frame)
@@ -86,72 +86,6 @@ impl Frame {
         }
         Ok(())
     }
-
-    fn simple_string<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
-        let line_length = get_line_length(reader)?;
-        let simple_str = reader.copy_to_bytes(line_length - 2);
-        reader.advance(2); // "\r\n"
-
-        let simple_str = String::from_utf8(simple_str.to_vec())?;
-        Ok(Frame::SimpleString(simple_str))
-    }
-
-    fn error<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
-        let line_length = get_line_length(reader)?;
-        let error_str = reader.copy_to_bytes(line_length - 2);
-        reader.advance(2); // "\r\n"
-
-        let error_str = String::from_utf8(error_str.to_vec())?;
-        Ok(Frame::Error(error_str))
-    }
-
-    fn integer<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
-        let int_value = get_integer(reader)?;
-        Ok(Frame::Integer(int_value))
-    }
-
-    fn bulk_string<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
-        let bulk_len = get_integer(reader)?;
-        if bulk_len == -1 {
-            return Ok(Frame::Null);
-        }
-        if !(0..=MAX_BULK_STRING_LENGTH).contains(&bulk_len) {
-            return Err(ErrorKind::InvalidFrame.into());
-        }
-
-        let bulk_len = bulk_len as usize;
-        if (bulk_len + 2) > reader.remaining() {
-            return Err(ErrorKind::IncompleteFrame.into());
-        }
-        if reader.chunk()[bulk_len] != b'\r' || reader.chunk()[bulk_len + 1] != b'\n' {
-            return Err(ErrorKind::InvalidFrame.into());
-        }
-
-        let bulk_bytes = reader.copy_to_bytes(bulk_len as usize);
-        reader.advance(2);
-        Ok(Frame::BulkString(bulk_bytes))
-    }
-
-    fn array<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
-        let array_len = get_integer(reader)?;
-        if array_len == -1 {
-            return Ok(Frame::Null);
-        }
-        if array_len < 0 {
-            return Err(ErrorKind::InvalidFrame.into());
-        }
-
-        let array_len = array_len as usize;
-        let mut items = Vec::with_capacity(array_len);
-        let mut items_remain = array_len;
-
-        while items_remain > 0 {
-            items.push(Frame::parse(reader)?);
-            items_remain -= 1;
-        }
-
-        Ok(Frame::Array(items))
-    }
 }
 
 impl From<Del> for Frame {
@@ -183,6 +117,72 @@ impl From<Set> for Frame {
             Self::BulkString(val),
         ])
     }
+}
+
+fn parse_simple_string<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
+    let line_length = get_line_length(reader)?;
+    let simple_str = reader.copy_to_bytes(line_length - 2);
+    reader.advance(2); // "\r\n"
+
+    let simple_str = String::from_utf8(simple_str.to_vec())?;
+    Ok(Frame::SimpleString(simple_str))
+}
+
+fn parse_error<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
+    let line_length = get_line_length(reader)?;
+    let error_str = reader.copy_to_bytes(line_length - 2);
+    reader.advance(2); // "\r\n"
+
+    let error_str = String::from_utf8(error_str.to_vec())?;
+    Ok(Frame::Error(error_str))
+}
+
+fn parse_integer<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
+    let int_value = get_integer(reader)?;
+    Ok(Frame::Integer(int_value))
+}
+
+fn parse_bulk_string<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
+    let bulk_len = get_integer(reader)?;
+    if bulk_len == -1 {
+        return Ok(Frame::Null);
+    }
+    if !(0..=MAX_BULK_STRING_LENGTH).contains(&bulk_len) {
+        return Err(ErrorKind::InvalidFrame.into());
+    }
+
+    let bulk_len = bulk_len as usize;
+    if (bulk_len + 2) > reader.remaining() {
+        return Err(ErrorKind::IncompleteFrame.into());
+    }
+    if reader.chunk()[bulk_len] != b'\r' || reader.chunk()[bulk_len + 1] != b'\n' {
+        return Err(ErrorKind::InvalidFrame.into());
+    }
+
+    let bulk_bytes = reader.copy_to_bytes(bulk_len as usize);
+    reader.advance(2);
+    Ok(Frame::BulkString(bulk_bytes))
+}
+
+fn parse_array<R: Buf>(reader: &mut R) -> Result<Frame, Error> {
+    let array_len = get_integer(reader)?;
+    if array_len == -1 {
+        return Ok(Frame::Null);
+    }
+    if array_len < 0 {
+        return Err(ErrorKind::InvalidFrame.into());
+    }
+
+    let array_len = array_len as usize;
+    let mut items = Vec::with_capacity(array_len);
+    let mut items_remain = array_len;
+
+    while items_remain > 0 {
+        items.push(Frame::parse(reader)?);
+        items_remain -= 1;
+    }
+
+    Ok(Frame::Array(items))
 }
 
 fn get_integer<R: Buf>(reader: &mut R) -> Result<i64, Error> {
