@@ -180,7 +180,7 @@ where
             let socket = self.accept().await?;
 
             // Creating the handler's state for managing the new connection
-            let mut handler = Handler {
+            let handler = Handler {
                 storage: self.storage.clone(),
                 connection: Connection::new(socket),
                 limit_connections: Arc::clone(&self.limit_connections),
@@ -188,7 +188,7 @@ where
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
 
-            // Spawn separate task for handling the connection
+            // Handle the connection in a new task
             tokio::spawn(async move {
                 if let Err(err) = handler.run().await {
                     error!(cause=?err, "connection error");
@@ -229,7 +229,7 @@ where
     /// When the shutdown signal is received, the connection is processed until
     /// it reaches a safe state, at which point it is terminated.
     #[tracing::instrument(skip(self))]
-    async fn run(&mut self) -> Result<(), Error> {
+    async fn run(mut self) -> Result<(), Error> {
         // Keeps ingesting frames when the server is still running
         while !self.shutdown.is_shutdown() {
             // Awaiting for a shutdown event or a new frame

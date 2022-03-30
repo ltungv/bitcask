@@ -57,13 +57,12 @@ impl Set {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply<KV: KeyValueStore>(
-        self,
-        storage: KV,
-        connection: &mut Connection,
-    ) -> Result<(), Error> {
+    pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), Error>
+    where
+        KV: KeyValueStore,
+    {
         // Set the key's value
-        tokio::task::spawn_blocking(move || storage.set(self.key, self.value)).await??;
+        storage.set(self.key, self.value)?;
 
         // Responding OK
         let response = Frame::SimpleString("OK".to_string());

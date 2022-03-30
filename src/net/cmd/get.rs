@@ -42,17 +42,14 @@ impl Get {
     /// Apply the command to the specified [`StorageEngine`] instance.
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
-    // #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply<KV: KeyValueStore>(
-        self,
-        storage: KV,
-        connection: &mut Connection,
-    ) -> Result<(), Error> {
+    #[tracing::instrument(skip(self, storage, connection))]
+    pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), Error>
+    where
+        KV: KeyValueStore,
+    {
         // Get the key's value
-        let get_result = tokio::task::spawn_blocking(move || storage.get(&self.key)).await?;
-
         // Responding with the received value
-        let response = match get_result {
+        let response = match storage.get(&self.key) {
             Ok(val) => Frame::BulkString(val),
             Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => Frame::Null,
             Err(e) => return Err(e),

@@ -33,12 +33,15 @@ impl Command {
     ///
     /// Passing a `Shutdown` allows the function to finish its execution
     /// when the server is shutting down.
-    pub async fn apply<KV: KeyValueStore>(
+    pub async fn apply<KV>(
         self,
         storage: KV,
         connection: &mut Connection,
         _shutdown: &mut Shutdown,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        KV: KeyValueStore,
+    {
         match self {
             Command::Del(cmd) => cmd.apply(storage, connection).await,
             Command::Get(cmd) => cmd.apply(storage, connection).await,

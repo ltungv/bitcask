@@ -47,24 +47,19 @@ impl Del {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply<KV: KeyValueStore>(
-        self,
-        storage: KV,
-        connection: &mut Connection,
-    ) -> Result<(), Error> {
-        // Set the key's value
-        let count = tokio::task::spawn_blocking(move || {
-            let mut count = 0;
-            for k in &self.keys {
-                match storage.del(k) {
-                    Ok(_) => count += 1,
-                    Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => continue,
-                    Err(e) => return Err(e),
-                }
+    pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), Error>
+    where
+        KV: KeyValueStore,
+    {
+        // Delete the keys and count the number of deletions
+        let mut count = 0;
+        for k in &self.keys {
+            match storage.del(k) {
+                Ok(_) => count += 1,
+                Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => continue,
+                Err(e) => return Err(e),
             }
-            Ok(count)
-        })
-        .await??;
+        }
 
         // Responding with the number of deletions
         let response = Frame::Integer(count);

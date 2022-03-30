@@ -18,6 +18,7 @@ use std::{
     },
 };
 
+/// Merge log files when then number of unused bytes across all files exceeds 4MB
 const GARBAGE_THRESHOLD: u64 = 4 * 1024 * 1024;
 
 /// A simple key-value that has supports for inserting, updating, accessing, and removing entries.
@@ -51,15 +52,6 @@ pub struct LogStructuredHashTable {
     r_context: ReadContext,
 }
 
-impl Clone for LogStructuredHashTable {
-    fn clone(&self) -> Self {
-        Self {
-            w_context: Arc::clone(&self.w_context),
-            r_context: self.r_context.clone(),
-        }
-    }
-}
-
 impl LogStructuredHashTable {
     /// Open the key-value store at the given path and return the store to the caller.
     pub fn open<P>(path: P) -> Result<Self, Error>
@@ -88,7 +80,6 @@ impl LogStructuredHashTable {
             merge_gen: Arc::new(AtomicU64::new(0)),
             readers: RefCell::new(readers),
         };
-
         let w_context = WriteContext {
             r_context: r_context.clone(),
             writer,
@@ -104,6 +95,8 @@ impl LogStructuredHashTable {
 }
 
 impl KeyValueStore for LogStructuredHashTable {
+    /// Set the value of a key and overwrite any existing value at that key.
+    ///
     /// # Error
     ///
     /// Error from I/O operations and serialization/deserialization operations will be propagated.
@@ -131,6 +124,15 @@ impl KeyValueStore for LogStructuredHashTable {
     }
 }
 
+impl Clone for LogStructuredHashTable {
+    fn clone(&self) -> Self {
+        Self {
+            w_context: Arc::clone(&self.w_context),
+            r_context: self.r_context.clone(),
+        }
+    }
+}
+
 /// A database's writer that updates on-disk files and maintains consistent index to those files
 #[derive(Debug)]
 struct WriteContext {
@@ -144,7 +146,8 @@ impl WriteContext {
     fn set(&mut self, key: String, val: Bytes) -> Result<(), Error> {
         let pos = self.writer.pos;
         let log_entry = LogEntry::Set(key.clone(), val);
-        bincode::serialize_into(&mut self.writer, &log_entry)?;
+        bincode::serialize_into(&mut self.writer, &log_entry)
+            .map_err(|e| Error::new(ErrorKind::SerializationFailed, e))?;
         self.writer.flush()?;
 
         let log_index = LogIndex {
@@ -167,7 +170,8 @@ impl WriteContext {
         }
 
         let log_entry = LogEntry::Rm(key.to_string());
-        bincode::serialize_into(&mut self.writer, &log_entry)?;
+        bincode::serialize_into(&mut self.writer, &log_entry)
+            .map_err(|e| Error::new(ErrorKind::SerializationFailed, e))?;
         self.writer.flush()?;
 
         if let Some((_, prev_index)) = self.r_context.index.remove(key) {
@@ -271,7 +275,8 @@ impl ReadContext {
                 .or_insert(open_log(self.path.as_ref(), index.gen)?);
 
             reader.seek(SeekFrom::Start(index.pos))?;
-            bincode::deserialize_from(reader)?
+            bincode::deserialize_from(reader)
+                .map_err(|e| Error::new(ErrorKind::DeserializationFailed, e))?
         };
 
         match log_entry {
@@ -338,9 +343,9 @@ fn build_index(
                 bincode::ErrorKind::Io(io_err) => match io_err.kind() {
                     // TODO: Note down why this is ok
                     io::ErrorKind::UnexpectedEof => break,
-                    _ => return Err(Error::from(err)),
+                    _ => return Err(Error::new(ErrorKind::DeserializationFailed, err)),
                 },
-                _ => return Err(Error::from(err)),
+                _ => return Err(Error::new(ErrorKind::DeserializationFailed, err)),
             },
         }
     }

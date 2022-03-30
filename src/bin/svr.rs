@@ -1,7 +1,8 @@
 use opal::{
     engine::{self, InMemoryStorage, LogStructuredHashTable},
+    error::Error,
     net::Server,
-    telemetry::{get_subscriber, init_subscriber},
+    telemetry::{get_subscriber, init_subscriber}, threadpool::RayonThreadPool,
 };
 use std::{env, fs, net::IpAddr, path};
 use structopt::StructOpt;
@@ -9,7 +10,7 @@ use tokio::net::TcpListener;
 use tokio::signal;
 
 #[tokio::main]
-pub async fn main() -> Result<(), opal::error::Error> {
+pub async fn main() -> Result<(), Error> {
     // Setup global `tracing` subscriber
     let subscriber = get_subscriber("opald".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);
@@ -18,6 +19,9 @@ pub async fn main() -> Result<(), opal::error::Error> {
 
     // Bind a TCP listener
     let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
+    // Create threadpool dedicated for operations on the storage
+    let _thread_pool = RayonThreadPool::new(cli.nthreads)?;
+
     match cli.typ {
         engine::Type::LFS => {
             let db_dir = cli.path.unwrap_or(env::current_dir()?);
@@ -63,4 +67,11 @@ struct Cli {
 
     #[structopt(long = "path", about = "Path to the directory containing the data")]
     path: Option<path::PathBuf>,
+
+    #[structopt(
+        long = "nthreads",
+        about = "Number of threads used to run the key-value store",
+        default_value = "4"
+    )]
+    nthreads: usize,
 }

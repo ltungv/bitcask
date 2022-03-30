@@ -38,8 +38,6 @@ impl std::fmt::Display for Error {
             Repr::Custom(ref repr) => write!(f, "{}: {}", repr.kind.as_str(), repr.error),
             Repr::FromUtf8Error(ref e) => write!(f, "{}", e),
             Repr::IoError(ref e) => write!(f, "{}", e),
-            Repr::BincodeError(ref e) => write!(f, "{}", e),
-            Repr::JoinError(ref e) => write!(f, "{}", e),
         }
     }
 }
@@ -68,24 +66,9 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<bincode::Error> for Error {
-    fn from(err: bincode::Error) -> Self {
-        Self {
-            repr: Repr::BincodeError(err),
-        }
-    }
-}
-
-impl From<tokio::task::JoinError> for Error {
-    fn from(err: tokio::task::JoinError) -> Self {
-        Self {
-            repr: Repr::JoinError(err),
-        }
-    }
-}
-
 /// Different custom errors returned by the `net` module
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ErrorKind {
     /// Could not process client's command
     CommandFailed,
@@ -101,6 +84,14 @@ pub enum ErrorKind {
     CorruptedLog,
     /// Faulty in-memory index
     CorruptedIndex,
+    /// Serialization error
+    SerializationFailed,
+    /// Deserialization error
+    DeserializationFailed,
+    /// Error with threadpool operations
+    ThreadPoolError,
+    /// Asynchronous task execution failed
+    AsyncTaskFailed,
 }
 
 impl ErrorKind {
@@ -113,6 +104,10 @@ impl ErrorKind {
             Self::KeyNotFound => "key not found",
             Self::CorruptedLog => "corrupted log",
             Self::CorruptedIndex => "corrupted index",
+            Self::SerializationFailed => "serialization failed",
+            Self::DeserializationFailed => "deserialization failed",
+            Self::ThreadPoolError => "threadpool error",
+            Self::AsyncTaskFailed => "asynchronous task execution failed",
         }
     }
 }
@@ -126,10 +121,6 @@ enum Repr {
     FromUtf8Error(std::string::FromUtf8Error),
     /// Error from I/O operations
     IoError(std::io::Error),
-    /// Bincode serialization/deserialization error
-    BincodeError(bincode::Error),
-    /// Asynchronous task could not complete
-    JoinError(tokio::task::JoinError),
 }
 
 #[derive(Debug)]
