@@ -1,11 +1,19 @@
 use bytes::Bytes;
-use opal::engine::{InMemoryStorage, LogStructuredHashTable};
+use opal::engine::{InMemoryStorage, LogStructuredHashTable, SledKeyValueStore};
 use rand::{distributions::Alphanumeric, prelude::*};
 use tempfile::TempDir;
 
 pub fn prep_lfs() -> (LogStructuredHashTable, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let engine = LogStructuredHashTable::open(tmpdir.path()).unwrap();
+    let phys_cpus = num_cpus::get_physical();
+    let engine = LogStructuredHashTable::open(tmpdir.path(), phys_cpus).unwrap();
+    (engine, tmpdir)
+}
+
+pub fn prep_sled() -> (SledKeyValueStore, TempDir) {
+    let tmpdir = TempDir::new().unwrap();
+    let db = sled::Config::default().path(tmpdir.path()).open().unwrap();
+    let engine = SledKeyValueStore::new(db);
     (engine, tmpdir)
 }
 

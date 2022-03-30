@@ -1,5 +1,5 @@
 use opal::{
-    engine::{self, InMemoryStorage, LogStructuredHashTable},
+    engine::{self, InMemoryStorage, LogStructuredHashTable, SledKeyValueStore},
     error::Error,
     net::Server,
     telemetry::{get_subscriber, init_subscriber},
@@ -26,6 +26,15 @@ pub async fn main() -> Result<(), Error> {
             fs::create_dir_all(&db_dir)?;
 
             let storage = LogStructuredHashTable::open(&db_dir, cli.nthreads)?;
+            let server = Server::new(listener, storage, signal::ctrl_c());
+            server.run().await;
+        }
+        engine::Type::Sled => {
+            let db_dir = cli.path.unwrap_or(env::current_dir()?);
+            fs::create_dir_all(&db_dir)?;
+
+            let db = sled::Config::default().path(db_dir).open().unwrap();
+            let storage = SledKeyValueStore::new(db);
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }

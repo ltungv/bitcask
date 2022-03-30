@@ -10,8 +10,11 @@ edition = "2021"
 atoi = "1"
 bincode = "1"
 bytes = { version = "1", features = ["serde"] }
+crossbeam = "0.8"
 dashmap = "5"
+rayon = "1"
 serde = { version = "1", features = ["derive"] }
+sled = "0.34"
 structopt = "0.3"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1", features = ["log"] }
@@ -23,7 +26,6 @@ tracing-subscriber = { version = "0.3", features = ["registry", "env-filter"] }
 criterion = "0.3"
 num_cpus = "1"
 rand = "0.8"
-rayon = "1"
 tempfile = "3"
 
 [[bench]]

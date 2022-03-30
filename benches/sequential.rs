@@ -19,6 +19,7 @@ pub fn sequential_write_bulk(c: &mut Criterion) {
     let mut g = c.benchmark_group("sequential_write_bulk");
     g.throughput(Throughput::Bytes((ITER * (KEY_SIZE + VAL_SIZE)) as u64));
     g.bench_with_input("kvs", &engine::Type::LFS, sequential_write_bulk_bench);
+    g.bench_with_input("sled", &engine::Type::Sled, sequential_write_bulk_bench);
     g.bench_with_input("inmem", &engine::Type::InMem, sequential_write_bulk_bench);
     g.finish();
 }
@@ -32,6 +33,16 @@ fn sequential_write_bulk_bench(b: &mut Bencher, engine: &engine::Type) {
             b.iter_batched(
                 || {
                     let (engine, tmpdir) = prep_lfs();
+                    (engine, kv_pairs.clone(), tmpdir)
+                },
+                sequential_write_bulk_bench_iter,
+                BatchSize::SmallInput,
+            );
+        }
+        engine::Type::Sled => {
+            b.iter_batched(
+                || {
+                    let (engine, tmpdir) = prep_sled();
                     (engine, kv_pairs.clone(), tmpdir)
                 },
                 sequential_write_bulk_bench_iter,
@@ -72,6 +83,10 @@ pub fn sequential_read_bulk(c: &mut Criterion) {
     {
         let (engine, _tmpdir) = prep_lfs();
         g.bench_with_input("kvs", &(engine, &kv_pairs), sequential_read_bulk_bench);
+    }
+    {
+        let (engine, _tmpdir) = prep_sled();
+        g.bench_with_input("sled", &(engine, &kv_pairs), sequential_read_bulk_bench);
     }
     {
         let (engine, _tmpdir) = prep_inmem();

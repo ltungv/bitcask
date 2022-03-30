@@ -2,11 +2,13 @@
 
 mod inmem;
 mod lfs;
+mod sledkv;
 
 use crate::error::Error;
 use bytes::Bytes;
 pub use inmem::InMemoryStorage;
 pub use lfs::LogStructuredHashTable;
+pub use sledkv::SledKeyValueStore;
 use std::str::FromStr;
 
 /// Define the interface of a key-value store
@@ -28,6 +30,8 @@ pub trait KeyValueStore: Clone + Send + 'static {
 pub enum Type {
     /// Log-structure file systems engine
     LFS,
+    /// Sled database
+    Sled,
     /// In-memory engine
     InMem,
 }
@@ -38,6 +42,7 @@ impl FromStr for Type {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().trim() {
             "lfs" => Ok(Self::LFS),
+            "sled" => Ok(Self::Sled),
             "memory" => Ok(Self::InMem),
             _ => Err("unsupported"),
         }

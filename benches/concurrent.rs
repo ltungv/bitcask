@@ -30,6 +30,11 @@ pub fn concurrent_write_bulk(c: &mut Criterion) {
                 concurrent_write_bulk_bench,
             );
             g.bench_with_input(
+                BenchmarkId::new("sled", nthreads),
+                &(engine::Type::Sled, nthreads),
+                concurrent_write_bulk_bench,
+            );
+            g.bench_with_input(
                 BenchmarkId::new("inmem", nthreads),
                 &(engine::Type::InMem, nthreads),
                 concurrent_write_bulk_bench,
@@ -52,6 +57,18 @@ fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Ty
                 b.iter_batched(
                     || {
                         let (engine, tmpdir) = prep_lfs();
+                        (engine, kv_pairs.clone(), tmpdir)
+                    },
+                    concurrent_write_bulk_bench_iter,
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+        engine::Type::Sled => {
+            pool.install(|| {
+                b.iter_batched(
+                    || {
+                        let (engine, tmpdir) = prep_sled();
                         (engine, kv_pairs.clone(), tmpdir)
                     },
                     concurrent_write_bulk_bench_iter,
@@ -103,6 +120,11 @@ pub fn concurrent_read_bulk(c: &mut Criterion) {
             );
             g.bench_with_input(
                 BenchmarkId::new("sled", nthreads),
+                &(engine::Type::Sled, nthreads),
+                concurrent_read_bulk_bench,
+            );
+            g.bench_with_input(
+                BenchmarkId::new("inmem", nthreads),
                 &(engine::Type::InMem, nthreads),
                 concurrent_read_bulk_bench,
             );
@@ -121,6 +143,25 @@ fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Typ
     match *engine {
         engine::Type::LFS => {
             let (engine, _tmpdir) = prep_lfs();
+            kv_pairs
+                .iter()
+                .cloned()
+                .for_each(|(k, v)| engine.set(k, v).unwrap());
+
+            pool.install(move || {
+                b.iter_batched(
+                    || {
+                        let mut kv_pairs = kv_pairs.clone();
+                        kv_pairs.shuffle(&mut rng);
+                        (engine.clone(), kv_pairs)
+                    },
+                    concurrent_read_bulk_bench_iter,
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+        engine::Type::Sled => {
+            let (engine, _tmpdir) = prep_sled();
             kv_pairs
                 .iter()
                 .cloned()
