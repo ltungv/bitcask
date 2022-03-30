@@ -2,7 +2,7 @@ use opal::{
     engine::{self, InMemoryStorage, LogStructuredHashTable},
     error::Error,
     net::Server,
-    telemetry::{get_subscriber, init_subscriber}, threadpool::RayonThreadPool,
+    telemetry::{get_subscriber, init_subscriber},
 };
 use std::{env, fs, net::IpAddr, path};
 use structopt::StructOpt;
@@ -19,15 +19,13 @@ pub async fn main() -> Result<(), Error> {
 
     // Bind a TCP listener
     let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
-    // Create threadpool dedicated for operations on the storage
-    let _thread_pool = RayonThreadPool::new(cli.nthreads)?;
 
     match cli.typ {
         engine::Type::LFS => {
             let db_dir = cli.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
-            let storage = LogStructuredHashTable::open(&db_dir)?;
+            let storage = LogStructuredHashTable::open(&db_dir, cli.nthreads)?;
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }

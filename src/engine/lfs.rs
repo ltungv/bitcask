@@ -3,6 +3,7 @@
 use super::KeyValueStore;
 use crate::error::{Error, ErrorKind};
 use bytes::Bytes;
+use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -49,12 +50,12 @@ pub struct LogStructuredHashTable {
     // - Postpone cleanup until later
     // - Share flags and counters with atomics
     w_context: Arc<Mutex<WriteContext>>,
-    r_context: ReadContext,
+    r_contexts: Arc<ArrayQueue<ReadContext>>,
 }
 
 impl LogStructuredHashTable {
     /// Open the key-value store at the given path and return the store to the caller.
-    pub fn open<P>(path: P) -> Result<Self, Error>
+    pub fn open<P>(path: P, concurrent_reads: usize) -> Result<Self, Error>
     where
         P: AsRef<Path>,
     {
@@ -80,8 +81,16 @@ impl LogStructuredHashTable {
             merge_gen: Arc::new(AtomicU64::new(0)),
             readers: RefCell::new(readers),
         };
+
+        let r_contexts = ArrayQueue::new(concurrent_reads);
+        for _ in 0..concurrent_reads {
+            r_contexts
+                .push(r_context.clone())
+                .expect("unreachable error");
+        }
+
         let w_context = WriteContext {
-            r_context: r_context.clone(),
+            r_context,
             writer,
             gen,
             garbage,
@@ -89,7 +98,7 @@ impl LogStructuredHashTable {
 
         Ok(Self {
             w_context: Arc::new(Mutex::new(w_context)),
-            r_context,
+            r_contexts: Arc::new(r_contexts),
         })
     }
 }
@@ -110,7 +119,17 @@ impl KeyValueStore for LogStructuredHashTable {
     ///
     /// Error from I/O operations will be propagated.
     fn get(&self, key: &str) -> Result<Bytes, Error> {
-        self.r_context.get(key)
+        let backoff = Backoff::new();
+        // Spin until we got access to a read context
+        loop {
+            if let Some(r_context) = self.r_contexts.pop() {
+                let result = r_context.get(key);
+                // Return the context after we finish reading so other tasks can make progress
+                self.r_contexts.push(r_context).expect("unreachable error");
+                return result;
+            }
+            backoff.spin();
+        }
     }
 
     /// Removes a key.
@@ -128,7 +147,7 @@ impl Clone for LogStructuredHashTable {
     fn clone(&self) -> Self {
         Self {
             w_context: Arc::clone(&self.w_context),
-            r_context: self.r_context.clone(),
+            r_contexts: Arc::clone(&self.r_contexts),
         }
     }
 }
