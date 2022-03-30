@@ -48,8 +48,12 @@ impl Get {
         KV: KeyValueStore,
     {
         // Get the key's value
+        let result = tokio::task::spawn_blocking(move || storage.get(&self.key))
+            .await
+            .map_err(|e| Error::new(ErrorKind::AsyncTaskFailed, e))?;
+
         // Responding with the received value
-        let response = match storage.get(&self.key) {
+        let response = match result {
             Ok(val) => Frame::BulkString(val),
             Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => Frame::Null,
             Err(e) => return Err(e),

@@ -52,14 +52,19 @@ impl Del {
         KV: KeyValueStore,
     {
         // Delete the keys and count the number of deletions
-        let mut count = 0;
-        for k in &self.keys {
-            match storage.del(k) {
-                Ok(_) => count += 1,
-                Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => continue,
-                Err(e) => return Err(e),
+        let count = tokio::task::spawn_blocking(move || {
+            let mut count = 0;
+            for key in &self.keys {
+                match storage.del(key) {
+                    Ok(_) => count += 1,
+                    Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => continue,
+                    Err(e) => return Err(e),
+                };
             }
-        }
+            Ok(count)
+        })
+        .await
+        .map_err(|e| Error::new(ErrorKind::AsyncTaskFailed, e))??;
 
         // Responding with the number of deletions
         let response = Frame::Integer(count);

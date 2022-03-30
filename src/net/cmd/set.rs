@@ -62,7 +62,9 @@ impl Set {
         KV: KeyValueStore,
     {
         // Set the key's value
-        storage.set(self.key, self.value)?;
+        tokio::task::spawn_blocking(move || storage.set(self.key, self.value))
+            .await
+            .map_err(|e| Error::new(ErrorKind::AsyncTaskFailed, e))??;
 
         // Responding OK
         let response = Frame::SimpleString("OK".to_string());
