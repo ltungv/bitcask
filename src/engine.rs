@@ -1,4 +1,4 @@
-//! Define the interface for a storage engine and different implementations of thatinterface
+//! Define the interface for a storage engine and different implementations of that interface.
 
 mod inmem;
 mod lfs;
@@ -11,28 +11,41 @@ pub use lfs::LogStructuredHashTable;
 pub use sledkv::SledKeyValueStore;
 use std::str::FromStr;
 
-/// Define the interface of a key-value store
+/// A basic interface for a thread-safe key-value store that ensure consistent access to shared
+/// data from multiple different threads.
 pub trait KeyValueStore: Clone + Send + 'static {
-    /// Sets a value to a key and returns the value previously associated with that key if it
-    /// exists, otherwise, returns `None`.
+    /// Set the value of a key, overwriting any existing value at that key.
+    ///
+    /// # Error
+    ///
+    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn set(&self, key: String, value: Bytes) -> Result<(), Error>;
 
-    /// Returns the value of a key if the key exists, otherwise, returns `None`.
+    /// Get the value of a key, if it exists.
+    ///
+    /// # Error
+    ///
+    /// If the queried key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
+    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn get(&self, key: &str) -> Result<Bytes, Error>;
 
-    /// Removes a key and returns the value associated with that key if its exists, otherwise,
-    /// returns `None`.
+    /// Delete a key and its value, if it exists.
+    ///
+    /// # Error
+    ///
+    /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
+    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn del(&self, key: &str) -> Result<(), Error>;
 }
 
 /// Supported type of engine.
 #[derive(Debug)]
 pub enum Type {
-    /// Log-structure file systems engine
+    /// Log-structure file systems engine.
     LFS,
-    /// Sled database
+    /// Sled database engine.
     Sled,
-    /// In-memory engine
+    /// In-memory engine.
     InMem,
 }
 

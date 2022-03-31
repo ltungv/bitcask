@@ -1,4 +1,5 @@
-//! An `KeyValueStore` that uses log-structure file system.
+//! Implementation of a `KeyValueStore` that uses log-structured file system to manage data and
+//! persist data to disk with high write throughput.
 
 use super::KeyValueStore;
 use crate::error::{Error, ErrorKind};
@@ -19,42 +20,44 @@ use std::{
     },
 };
 
-/// Merge log files when then number of unused bytes across all files exceeds 4MB
-const GARBAGE_THRESHOLD: u64 = 4 * 1024 * 1024;
+/// Merge log files when then number of unused bytes across all files exceeds this limit.
+const GARBAGE_THRESHOLD: u64 = 4 * 1024 * 1024; // 4MB
 
-/// A simple key-value that has supports for inserting, updating, accessing, and removing entries.
-/// This implementation holds that key-value inside the main memory that doesn't support data
-/// persistence.
+/// A simple string key-value store that persists data to on-disk log files and keeps indices
+/// to the locations of the persisted data in the log files using a hash table for fast queries.
 ///
-/// Serialization/Deserialization is done using the `bincode` crate. The crate is chosen mainly
-/// because of its performance.
+/// # Design notes
+///
+/// We use 2 separated objects of types  `WriteContext` and `ReadContext` so that read
+/// operations can occur concurrently without having to use a lock. We ensure that:
+/// + The index remains consistent while data is being persisted to on-disk logs.
+/// + Reads from index and from disk can happen on multiple threads at once.
+/// + Reads can happen in parallel with writes, which means that `r_contexts` always see a
+/// consistent state.
+/// + On-disk data is periodically compacted while maintaining the invariants for reads.
+///
+/// We maintain a queue of `ReadContext` in `r_contexts` so we don't create multiple copies of
+/// `ReadContext` when there are multiple concurrent accesses. Because the number of concurrent
+/// reads are limited by the machine hardware, we can be sure that there are at most `N` objects
+/// of type `ReadContext` at once. Thus we can create `N` objects of type `ReadContext` upon
+/// initialization and cycle through them when required. When a read occurs, a `ReadContext` is
+/// taken from the queue, then it is put back into the queue once the read finishes.
+///
+/// # References
+///
+/// + [Bitcask: A Log-Structured Hash Table for Fast Key/Value Data](https://riak.com/assets/bitcask-intro.pdf)
+/// + [The Design and Implementation of a Log-Structured File System](https://people.eecs.berkeley.edu/~brewer/cs262/LFS.pdf)
 #[derive(Debug)]
 pub struct LogStructuredHashTable {
-    // NOTE: Breaking up the lock
-    //
-    // # Requirements
-    // - Read from index and from disk on multiple threads at a time
-    // - Write log to disk while maintaining the index
-    // - Read in parallel with write, i.e., readers will always see a consistent state
-    //   - Maintaining an invariant that the index always points to a valid entry in the log
-    //   - Maintaining other invariants for bookkeeping state
-    // - Periodically compact disk's data, while maintaining invariants for readers
-    //
-    // # How to break up lock
-    //
-    // - Understand and maintain the program sequential consistency
-    // - Identify immutable values
-    // - Duplicate instead of sharing
-    // - Break up data structures by role
-    // - Use specialized concurrent data structure
-    // - Postpone cleanup until later
-    // - Share flags and counters with atomics
+    /// The write-context is in-charge of making modifications to the state of the key-value store.
     w_context: Arc<Mutex<WriteContext>>,
+
+    /// The read-context is in-charge of providing access to the state of the key-value store.
     r_contexts: Arc<ArrayQueue<ReadContext>>,
 }
 
 impl LogStructuredHashTable {
-    /// Open the key-value store at the given path and return the store to the caller.
+    /// Open the persisted key-value store at the given path and return it to the caller.
     pub fn open<P>(path: P, concurrent_reads: usize) -> Result<Self, Error>
     where
         P: AsRef<Path>,
@@ -62,82 +65,68 @@ impl LogStructuredHashTable {
         let prev_gens = previous_gens(&path)?;
         let gen = prev_gens.last().map(|&e| e + 1).unwrap_or_default();
 
-        // go through all log files, rebuild the index, and keep the handle to each log for later access
         let mut garbage = 0;
         let mut index = DashMap::new();
-        let mut readers = BTreeMap::new();
+
+        // go through all log files, rebuild the index, and keep the reader to each log for later access
         for prev_gen in prev_gens {
             let mut reader = open_log(&path, prev_gen)?;
             garbage += build_index(&mut reader, &mut index, prev_gen)?;
-            readers.insert(prev_gen, reader);
         }
-        // create a new log file for this instance, taking a write handle and a read handle for it
-        let (writer, reader) = create_log(&path, gen)?;
-        readers.insert(gen, reader);
+        // create a new log file for this instance and take a write handle and a read handle
+        let (writer, _) = create_log(&path, gen)?;
 
-        let r_context = ReadContext {
-            path: Arc::new(path.as_ref().to_path_buf()),
-            index: Arc::new(index),
-            merge_gen: Arc::new(AtomicU64::new(0)),
-            readers: RefCell::new(readers),
-        };
+        let context = Arc::new(Context {
+            path: path.as_ref().to_path_buf(),
+            merge_gen: AtomicU64::new(0),
+            index,
+        });
 
-        let r_contexts = ArrayQueue::new(concurrent_reads);
+        let r_contexts = Arc::new(ArrayQueue::new(concurrent_reads));
         for _ in 0..concurrent_reads {
             r_contexts
-                .push(r_context.clone())
+                .push(ReadContext {
+                    context: Arc::clone(&context),
+                    readers: RefCell::new(BTreeMap::new()),
+                })
                 .expect("unreachable error");
         }
 
-        let w_context = WriteContext {
-            r_context,
+        let w_context = Arc::new(Mutex::new(WriteContext {
+            context: Arc::clone(&context),
+            readers: RefCell::new(BTreeMap::new()),
             writer,
             gen,
             garbage,
-        };
+        }));
 
         Ok(Self {
-            w_context: Arc::new(Mutex::new(w_context)),
-            r_contexts: Arc::new(r_contexts),
+            w_context,
+            r_contexts,
         })
     }
 }
 
 impl KeyValueStore for LogStructuredHashTable {
-    /// Set the value of a key and overwrite any existing value at that key.
-    ///
-    /// # Error
-    ///
-    /// Error from I/O operations and serialization/deserialization operations will be propagated.
     fn set(&self, key: String, val: Bytes) -> Result<(), Error> {
         self.w_context.lock().unwrap().set(key, val)
     }
 
-    /// Returns the value of a key, if the key exists. Otherwise, returns `None`.
-    ///
-    /// # Error
-    ///
-    /// Error from I/O operations will be propagated.
     fn get(&self, key: &str) -> Result<Bytes, Error> {
         let backoff = Backoff::new();
-        // Spin until we got access to a read context
         loop {
             if let Some(r_context) = self.r_contexts.pop() {
+                // Make a query with the key and return the context to the queue after we finish so
+                // other threads can make progress
                 let result = r_context.get(key);
-                // Return the context after we finish reading so other tasks can make progress
                 self.r_contexts.push(r_context).expect("unreachable error");
-                return result;
+                break result;
             }
+            // Spin until we have access to a read context
             backoff.spin();
         }
     }
 
-    /// Removes a key.
-    ///
-    /// # Error
-    ///
-    /// Error from I/O operations will be propagated. If the key doesn't exist returns a
-    /// `KeyNotFound` error.
     fn del(&self, key: &str) -> Result<(), Error> {
         self.w_context.lock().unwrap().del(key)
     }
@@ -152,53 +141,96 @@ impl Clone for LogStructuredHashTable {
     }
 }
 
-/// A database's writer that updates on-disk files and maintains consistent index to those files
+/// The context of the key-value store, i.e., shared state required by different components of
+/// the system.
+#[derive(Debug)]
+struct Context {
+    /// The path of the directory where log files are stored.
+    path: PathBuf,
+
+    /// The generation number of the last merged log file, i.e., the oldest generation number
+    /// where data is not stale. We use this number to determine which readers to be discared.
+    merge_gen: AtomicU64,
+
+    /// The mapping from key strings to positions of data in the log files.
+    index: DashMap<String, LogIndex>,
+}
+
+/// The database write context that updates on-disk log files and maintains a consistent index to
+/// the locations of log entries on those files.
 #[derive(Debug)]
 struct WriteContext {
-    r_context: ReadContext,
+    /// The state that is shared by both `WriteContext` and `ReadContext`.
+    context: Arc<Context>,
+
+    /// The mapping from generation numbers to the log file readers used when performing merges.
+    readers: RefCell<BTreeMap<u64, BufSeekReader<File>>>,
+
+    /// The buffered writer the is used to persist on-disk data.
     writer: BufSeekWriter<File>,
+
+    /// The generation number of the log file that is currently being written to.
     gen: u64,
+
+    /// The amount of unused bytes across all log files accumulated when the value of a key is
+    /// changed or when the key is deleted.
     garbage: u64,
 }
 
 impl WriteContext {
+    /// Set the value of a key, overwriting any existing value at that key.
+    ///
+    /// # Error
+    ///
+    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn set(&mut self, key: String, val: Bytes) -> Result<(), Error> {
-        let pos = self.writer.pos;
-        let log_entry = LogEntry::Set(key.clone(), val);
-        bincode::serialize_into(&mut self.writer, &log_entry)
-            .map_err(|e| Error::new(ErrorKind::SerializationFailed, e))?;
-        self.writer.flush()?;
-
+        // Write the entry to disk
+        let (pos, len) = self.write(LogEntry::Set(key.clone(), val))?;
         let log_index = LogIndex {
             gen: self.gen,
             pos,
-            len: self.writer.pos - pos,
+            len,
         };
-        if let Some(prev_index) = self.r_context.index.insert(key, log_index) {
-            self.garbage += prev_index.len;
-            if self.garbage > GARBAGE_THRESHOLD {
-                self.merge()?;
-            }
+        // Accumulated unused bytes count when we overwrite the previous value of the given key
+        if let Some(prev_index) = self.context.index.insert(key, log_index) {
+            self.gc(prev_index.len)?;
         };
         Ok(())
     }
 
+    /// Delete a key and its value, if it exists.
+    ///
+    /// # Error
+    ///
+    /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
+    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn del(&mut self, key: &str) -> Result<(), Error> {
-        if !self.r_context.index.contains_key(key) {
-            return Err(Error::from(ErrorKind::KeyNotFound));
+        match self.context.index.remove(key) {
+            Some((_, prev_index)) => {
+                // Write a tombstone value
+                self.write(LogEntry::Rm(key.to_string()))?;
+                // Accumulated unused bytes count when we delete the given key
+                self.gc(prev_index.len)?;
+                Ok(())
+            }
+            None => Err(Error::from(ErrorKind::KeyNotFound)),
         }
+    }
 
-        let log_entry = LogEntry::Rm(key.to_string());
-        bincode::serialize_into(&mut self.writer, &log_entry)
+    fn write(&mut self, entry: LogEntry) -> Result<(u64, u64), Error> {
+        let pos = self.writer.pos;
+        bincode::serialize_into(&mut self.writer, &entry)
             .map_err(|e| Error::new(ErrorKind::SerializationFailed, e))?;
         self.writer.flush()?;
+        let len = self.writer.pos - pos;
+        Ok((pos, len))
+    }
 
-        if let Some((_, prev_index)) = self.r_context.index.remove(key) {
-            self.garbage += prev_index.len;
-            if self.garbage > GARBAGE_THRESHOLD {
-                self.merge()?;
-            }
-        };
+    fn gc(&mut self, sz: u64) -> Result<(), Error> {
+        self.garbage += sz;
+        if self.garbage > GARBAGE_THRESHOLD {
+            self.merge()?;
+        }
         Ok(())
     }
 
@@ -206,16 +238,15 @@ impl WriteContext {
         // Copy 2 new logs, one for merging and one for the new active log
         let merge_gen = self.gen + 1;
         let new_gen = self.gen + 2;
-        let (mut merged_writer, merged_reader) =
-            create_log(self.r_context.path.as_ref(), merge_gen)?;
-        let (writer, reader) = create_log(self.r_context.path.as_ref(), new_gen)?;
+        let (mut merged_writer, merged_reader) = create_log(&self.context.path, merge_gen)?;
+        let (writer, reader) = create_log(&self.context.path, new_gen)?;
 
         // Copy data to the merge log and update the index
-        let mut readers = self.r_context.readers.borrow_mut();
-        for mut log_index in self.r_context.index.iter_mut() {
+        let mut readers = self.readers.borrow_mut();
+        for mut log_index in self.context.index.iter_mut() {
             let reader = readers
                 .entry(log_index.gen)
-                .or_insert(open_log(self.r_context.path.as_ref(), log_index.gen)?);
+                .or_insert(open_log(&self.context.path, log_index.gen)?);
 
             reader.seek(SeekFrom::Start(log_index.pos))?;
             let mut entry_reader = reader.take(log_index.len);
@@ -235,13 +266,13 @@ impl WriteContext {
 
         // set merge generation, `ReadContext` in all threads will observe the new value and drop
         // its the file handle
-        self.r_context.merge_gen.store(merge_gen, Ordering::SeqCst);
+        self.context.merge_gen.store(merge_gen, Ordering::SeqCst);
 
         // remove stale log files
-        let prev_gens = previous_gens(self.r_context.path.as_ref())?;
+        let prev_gens = previous_gens(&self.context.path)?;
         let stale_gens = prev_gens.iter().filter(|&&gen| gen < merge_gen);
         for gen in stale_gens {
-            let log_path = self.r_context.path.join(format!("gen-{}.log", gen));
+            let log_path = self.context.path.join(format!("gen-{}.log", gen));
             fs::remove_file(log_path)?;
         }
 
@@ -256,15 +287,13 @@ impl WriteContext {
 /// A database's reader that reads from on-disk files based on the current index
 #[derive(Debug)]
 struct ReadContext {
-    path: Arc<PathBuf>,
-    index: Arc<DashMap<String, LogIndex>>,
-    merge_gen: Arc<AtomicU64>,
+    context: Arc<Context>,
     readers: RefCell<BTreeMap<u64, BufSeekReader<File>>>,
 }
 
 impl ReadContext {
     fn get(&self, key: &str) -> Result<Bytes, Error> {
-        match self.index.get(key) {
+        match self.context.index.get(key) {
             None => Err(Error::from(ErrorKind::KeyNotFound)),
             Some(index) => {
                 self.drop_stale_readers();
@@ -278,7 +307,7 @@ impl ReadContext {
             let mut readers = self.readers.borrow_mut();
             let reader = readers
                 .entry(index.gen)
-                .or_insert(open_log(self.path.as_ref(), index.gen)?);
+                .or_insert(open_log(&self.context.path, index.gen)?);
 
             reader.seek(SeekFrom::Start(index.pos))?;
             bincode::deserialize_from(reader)
@@ -295,7 +324,7 @@ impl ReadContext {
     }
 
     fn drop_stale_readers(&self) {
-        let merge_gen = self.merge_gen.load(Ordering::SeqCst);
+        let merge_gen = self.context.merge_gen.load(Ordering::SeqCst);
         let mut readers = self.readers.borrow_mut();
         let gens: Vec<_> = readers
             .keys()
@@ -313,9 +342,7 @@ impl Clone for ReadContext {
         // The `ReadContext` will be cloned and sent across threads. Each cloned `ReadContext`
         // will have unique file handles to the log files so that read can happen concurrently
         Self {
-            path: Arc::clone(&self.path),
-            index: Arc::clone(&self.index),
-            merge_gen: Arc::clone(&self.merge_gen),
+            context: Arc::clone(&self.context),
             readers: RefCell::new(BTreeMap::new()),
         }
     }
