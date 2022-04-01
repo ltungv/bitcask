@@ -1,10 +1,12 @@
 //! Define the interface for a storage engine and different implementations of that interface.
 
+mod bitcask;
 mod inmem;
 mod lfs;
 mod sledkv;
 
 use crate::error::Error;
+pub use bitcask::{BitCaskConfig,BitCaskKeyValueStore};
 use bytes::Bytes;
 pub use inmem::InMemoryStorage;
 pub use lfs::LogStructuredHashTable;
@@ -41,6 +43,8 @@ pub trait KeyValueStore: Clone + Send + 'static {
 /// Supported type of engine.
 #[derive(Debug)]
 pub enum Type {
+    /// BitCask engine.
+    BitCask,
     /// Log-structure file systems engine.
     LFS,
     /// Sled database engine.
@@ -54,6 +58,7 @@ impl FromStr for Type {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().trim() {
+            "bitcask" => Ok(Self::BitCask),
             "lfs" => Ok(Self::LFS),
             "sled" => Ok(Self::Sled),
             "memory" => Ok(Self::InMem),

@@ -1,6 +1,9 @@
 use opal::{
-    engine::{self, InMemoryStorage, LogStructuredHashTable, SledKeyValueStore},
-    error::Error,
+    engine::{
+        self, BitCaskConfig, BitCaskKeyValueStore, InMemoryStorage, LogStructuredHashTable,
+        SledKeyValueStore,
+    },
+    error::{Error, ErrorKind},
     net::Server,
     telemetry::{get_subscriber, init_subscriber},
 };
@@ -21,6 +24,19 @@ pub async fn main() -> Result<(), Error> {
     let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
 
     match cli.typ {
+        engine::Type::BitCask => {
+            let db_dir = cli.path.unwrap_or(env::current_dir()?);
+            fs::create_dir_all(&db_dir)?;
+
+            let storage = BitCaskKeyValueStore(
+                BitCaskConfig::default()
+                    .concurrency(cli.nthreads)
+                    .open(db_dir)
+                    .map_err(|e| Error::new(ErrorKind::CommandFailed, e))?,
+            );
+            let server = Server::new(listener, storage, signal::ctrl_c());
+            server.run().await;
+        }
         engine::Type::LFS => {
             let db_dir = cli.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
@@ -68,7 +84,7 @@ struct Cli {
     #[structopt(
         long = "type",
         about = "The engine used by the key-value store",
-        default_value = "lfs"
+        default_value = "bitcask"
     )]
     typ: engine::Type,
 
