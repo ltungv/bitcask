@@ -124,7 +124,7 @@ impl BitCask {
             readers
                 .push(BitCaskReader {
                     ctx: Arc::clone(&ctx),
-                    readers: RefCell::new(DataDir::default()),
+                    readers: Default::default(),
                 })
                 .expect("unreachable error");
         }
@@ -133,7 +133,7 @@ impl BitCask {
             DataFileWriter::create(path.as_ref().join(utils::datafile_name(active_fileid)))?;
         let writer = Arc::new(Mutex::new(BitCaskWriter {
             ctx,
-            readers: RefCell::new(DataDir::default()),
+            readers: Default::default(),
             writer,
             active_fileid,
             garbage,

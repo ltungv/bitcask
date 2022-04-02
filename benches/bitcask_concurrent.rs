@@ -14,7 +14,7 @@ pub fn bench_write(c: &mut Criterion) {
     let kv_pairs = prebuilt_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
     let pool = get_threadpool(num_cpus::get_physical());
 
-    c.bench_function("lfs_concurrent_write", |b| {
+    c.bench_function("bitcash_concurrent_write", |b| {
         pool.install(|| {
             b.iter_batched(
                 || {
@@ -46,7 +46,7 @@ pub fn bench_read(c: &mut Criterion) {
         engine.set(&k, &v).unwrap();
     });
 
-    c.bench_function("lfs_concurrent_read", |b| {
+    c.bench_function("bitcask_concurrent_read", |b| {
         pool.install(|| {
             b.iter_batched(
                 || {
@@ -72,7 +72,7 @@ pub fn bench_read(c: &mut Criterion) {
 
 criterion_group!(
     name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    config = Criterion::default().with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)));
     targets = bench_write, bench_read
 );
 criterion_main!(benches);
