@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, Read, Seek, Write},
+    io::{self, Write},
     path::Path,
 };
 
@@ -8,6 +8,9 @@ use bytes::Buf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::bufio::{BufReaderWithPos, BufWriterWithPos};
+
+/// Error when working with BitCask data files.
 #[derive(Error, Debug)]
 pub enum DataFileError {
     #[error(transparent)]
@@ -17,148 +20,139 @@ pub enum DataFileError {
     Serialization(#[from] bincode::Error),
 }
 
+/// The position of a data entry within the data file.
 #[derive(Debug)]
-pub(crate) struct DataFileIndex {
-    pub(crate) len: u64,
-    pub(crate) pos: u64,
+pub struct DataFileIndex {
+    /// The serialized byte size of the data entry.
+    pub len: u64,
+    /// The position of the data entry given as an offset from the beginning of the entry.
+    pub pos: u64,
 }
 
+/// The data entry that gets appended to the data file on write.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DataFileEntry {
+    /// Local unix nano timestamp.
+    pub tstamp: u128,
+    /// Data of the key.
+    pub key: Vec<u8>,
+    /// Data of the value.
+    pub value: DataFileEntryValue,
+}
+
+/// The entry's value.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
-pub(crate) enum DataFileEntryValue {
+pub enum DataFileEntryValue {
+    /// The key has been deleted.
     Tombstone,
+    /// The value of the key.
     Data(Vec<u8>),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct DataFileEntry {
-    pub(crate) tstamp: u128,
-    pub(crate) key: Vec<u8>,
-    pub(crate) value: DataFileEntryValue,
-}
-
+/// An iterator over all entries in an data file and their indices.
+///
+/// This struct only supports reading in one direction from start to end to iterate over all
+/// entries in the given data file. Use [`DataFileReader`] to read entries at random positions.
+///
+/// [`DataFileReader`]: opal::engine::bitcask::datafile::DataFileReader
 #[derive(Debug)]
-pub(crate) struct DataFileIterator {
-    pos: u64,
-    file: fs::File,
-}
+pub struct DataFileIterator(BufReaderWithPos<fs::File>);
 
 impl DataFileIterator {
-    pub(crate) fn open<P>(path: P) -> Result<Self, DataFileError>
+    /// Create a new iterator over the data file at the given `path`.
+    pub fn open<P>(path: P) -> Result<Self, DataFileError>
     where
         P: AsRef<Path>,
     {
         let file = fs::OpenOptions::new().read(true).open(path)?;
-        let iter = file.try_into()?;
-        Ok(iter)
+        let buf_reader = BufReaderWithPos::new(file)?;
+        Ok(Self(buf_reader))
     }
-}
 
-impl TryFrom<fs::File> for DataFileIterator {
-    type Error = io::Error;
+    /// Return a next entry in the data file.
+    pub fn entry(&mut self) -> Result<Option<(DataFileIndex, DataFileEntry)>, DataFileError> {
+        // get reader current position so we can calculate the number of serialized bytes
+        let pos = self.0.pos();
 
-    fn try_from(mut file: fs::File) -> io::Result<Self> {
-        let pos = file.seek(io::SeekFrom::Start(0))?;
-        Ok(DataFileIterator { pos, file })
-    }
-}
-
-impl Read for DataFileIterator {
-    fn read(&mut self, b: &mut [u8]) -> std::result::Result<usize, io::Error> {
-        self.file.read(b).map(|bytes_read| {
-            self.pos += bytes_read as u64;
-            bytes_read
-        })
-    }
-}
-
-impl Iterator for DataFileIterator {
-    type Item = Result<(DataFileIndex, DataFileEntry), DataFileError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let pos = self.pos;
-        match bincode::deserialize_from(&mut *self) {
-            Err(err) => match err.as_ref() {
-                bincode::ErrorKind::Io(io_err) => match io_err.kind() {
-                    // TODO: Note down why this is ok
-                    io::ErrorKind::UnexpectedEof => None,
-                    _ => Some(Err(DataFileError::from(err))),
-                },
-                _ => Some(Err(DataFileError::from(err))),
-            },
+        match bincode::deserialize_from(&mut self.0) {
             Ok(entry) => {
-                let len = self.pos - pos;
+                let len = self.0.pos() - pos;
                 let index = DataFileIndex { len, pos };
-                Some(Ok((index, entry)))
+                Ok(Some((index, entry)))
             }
+            Err(e) => match e.as_ref() {
+                bincode::ErrorKind::Io(ioe) => match ioe.kind() {
+                    io::ErrorKind::UnexpectedEof => Ok(None), // stop iterating when EOF
+                    _ => Err(DataFileError::from(e)),
+                },
+                _ => Err(DataFileError::from(e)),
+            },
         }
     }
 }
 
+/// A random-access reader for entries in an data file given their indices.
+///
+/// This struct only supports reading entries when knowing theirs indices. To go over all entries
+/// without having to know the indices, use [`DataFileIterator`].
+///
+/// [`DataFileIterator`]: opal::engine::bitcask::datafile::DataFileIterator
 #[derive(Debug)]
-pub(crate) struct DataFileReader(fs::File);
+pub struct DataFileReader(fs::File);
 
 impl DataFileReader {
-    pub(crate) fn open<P>(path: P) -> Result<Self, DataFileError>
+    /// Create a new reader for data entries in the given `path`.
+    pub fn open<P>(path: P) -> Result<Self, DataFileError>
     where
         P: AsRef<Path>,
     {
         let file = fs::OpenOptions::new().read(true).open(path)?;
-        Ok(file.into())
+        Ok(Self(file))
     }
 
+    /// Return the entry at the given index in the data file.
+    ///
     /// # Unsafe
     ///
-    /// By calling this method, we guaranteed that the data at `pos` with length `len` is valid and
-    /// can be parse into a `DataFileEntry`
-    pub(crate) unsafe fn entry_at(
-        &self,
-        len: u64,
-        pos: u64,
-    ) -> Result<DataFileEntry, DataFileError> {
+    /// When using this method, we must maintain the invariant that reads will always access a
+    /// valid region. For BitCask, we ensure this by only appending to data files and keeping
+    /// the regions where we can index into immutable.
+    pub unsafe fn entry(&self, len: u64, pos: u64) -> Result<DataFileEntry, DataFileError> {
         let mmap = memmap2::MmapOptions::new()
             .offset(pos)
             .len(len as usize)
-            .map_copy_read_only(&self.0)?;
+            .map(&self.0)?;
         let entry = bincode::deserialize(&mmap)?;
         Ok(entry)
     }
 
+    /// Copy the entry at the given file location to another file
+    ///
     /// # Unsafe
     ///
-    /// By calling this method, we guaranteed that the data at `pos` with length `len` is valid and
-    /// can be parse into a `DataFileEntry`
-    pub(crate) unsafe fn copy_raw<W>(
-        &self,
-        len: u64,
-        pos: u64,
-        dst: &mut W,
-    ) -> Result<(), DataFileError>
+    /// When using this method, we must maintain the invariant that reads will always access a
+    /// valid region. For BitCask, we ensure this by only appending to data files and keeping
+    /// the regions where we can index into immutable.
+    pub unsafe fn copy<W>(&self, len: u64, pos: u64, dst: &mut W) -> Result<(), DataFileError>
     where
         W: Write,
     {
         let mmap = memmap2::MmapOptions::new()
             .offset(pos)
             .len(len as usize)
-            .map_copy_read_only(&self.0)?;
+            .map(&self.0)?;
         io::copy(&mut mmap.reader(), dst)?;
         Ok(())
     }
 }
 
-impl From<fs::File> for DataFileReader {
-    fn from(file: fs::File) -> Self {
-        DataFileReader(file)
-    }
-}
-
+/// An append-only writer for writing entries to the given data file.
 #[derive(Debug)]
-pub(crate) struct DataFileWriter {
-    pos: u64,
-    file: fs::File,
-}
+pub struct DataFileWriter(BufWriterWithPos<fs::File>);
 
 impl DataFileWriter {
-    pub(crate) fn create<P>(path: P) -> Result<Self, DataFileError>
+    /// Create a new data file for writing entries to.
+    pub fn create<P>(path: P) -> Result<Self, DataFileError>
     where
         P: AsRef<Path>,
     {
@@ -167,11 +161,17 @@ impl DataFileWriter {
             .append(true)
             .create_new(true)
             .open(path)?;
-        let writer = file.try_into()?;
-        Ok(writer)
+        let writer = BufWriterWithPos::new(file)?;
+        Ok(Self(writer))
     }
 
-    pub fn data(&mut self, tstamp: u128, key: &[u8], value: &[u8]) -> Result<DataFileIndex, DataFileError> {
+    /// Append an entry that contains data.
+    pub fn data(
+        &mut self,
+        tstamp: u128,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<DataFileIndex, DataFileError> {
         let entry = DataFileEntry {
             tstamp,
             key: key.to_vec(),
@@ -180,6 +180,7 @@ impl DataFileWriter {
         self.append(&entry)
     }
 
+    /// Append an entry that contains the tombstone.
     pub fn tombstone(&mut self, tstamp: u128, key: &[u8]) -> Result<DataFileIndex, DataFileError> {
         let entry = DataFileEntry {
             tstamp,
@@ -189,42 +190,26 @@ impl DataFileWriter {
         self.append(&entry)
     }
 
-    fn append(&mut self, entry: &DataFileEntry) -> Result<DataFileIndex, DataFileError> {
-        let pos = self.pos;
-        bincode::serialize_into(&mut *self, entry)?;
-        let len = self.pos - pos;
-        Ok(DataFileIndex { pos, len })
+    pub fn writer(&mut self) -> &mut BufWriterWithPos<fs::File> {
+        &mut self.0
     }
 
-    pub(crate) fn pos(&self) -> u64 {
-        self.pos
+    /// Return the last written position.
+    pub fn pos(&self) -> u64 {
+        self.0.pos()
     }
 
-    pub(crate) fn sync(&self) -> Result<(), DataFileError> {
-        self.file.sync_all()?;
+    /// Synchronize the writer state with the file system and ensure all data is written.
+    pub fn sync(&mut self) -> Result<(), DataFileError> {
+        self.0.flush()?;
         Ok(())
     }
-}
 
-impl Write for DataFileWriter {
-    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        self.file.write(b).map(|bytes_written| {
-            self.pos += bytes_written as u64;
-            bytes_written
-        })
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
-
-impl TryFrom<fs::File> for DataFileWriter {
-    type Error = io::Error;
-
-    fn try_from(mut file: fs::File) -> io::Result<Self> {
-        let pos = file.seek(io::SeekFrom::End(0))?;
-        Ok(DataFileWriter { pos, file })
+    fn append(&mut self, entry: &DataFileEntry) -> Result<DataFileIndex, DataFileError> {
+        let pos = self.0.pos();
+        bincode::serialize_into(&mut self.0, entry)?;
+        let len = self.0.pos() - pos;
+        Ok(DataFileIndex { pos, len })
     }
 }
 
@@ -237,38 +222,40 @@ mod tests {
     quickcheck! {
         fn writer_position_initialized_and_updated_after_write(tstamp: u128, key: Vec<u8>, value: Vec<u8>) -> bool {
             // setup writer
-            let datafile = tempfile::Builder::new().append(true).tempfile().unwrap().into_file();
-            let mut writer = DataFileWriter::try_from(datafile).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let fpath = dir.as_ref().join("test");
+            let mut writer = DataFileWriter::create(fpath).unwrap();
 
             // get the serialized length
             let entry = DataFileEntry { tstamp, key, value: DataFileEntryValue::Data(value) };
-            let bytes = bincode::serialize(&entry).unwrap().len() as u64;
+            let nbytes = bincode::serialize(&entry).unwrap().len() as u64;
 
             // record current position and write the entry
-            let pos_init = writer.pos;
+            let pos_init = writer.pos();
             let idx = writer.append(&entry).unwrap();
-            writer.flush().unwrap();
+            writer.sync().unwrap();
 
             // check if returned index matched previous position and serialized length
             // check if writer's position is updated
-            idx.pos == pos_init && idx.len == bytes && writer.pos == bytes
+            idx.pos == pos_init && idx.len == nbytes && writer.pos() == nbytes
         }
     }
 
     quickcheck! {
         fn reader_reads_entry_written_by_writer(tstamp: u128, key: Vec<u8>, value: Vec<u8>) -> bool {
             // setup reader and writer
-            let datafile = tempfile::Builder::new().append(true).tempfile().unwrap();
-            let reader = DataFileReader::open(datafile.path()).unwrap();
-            let mut writer = DataFileWriter::try_from(datafile.into_file()).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let fpath = dir.as_ref().join("test");
+            let mut writer = DataFileWriter::create(&fpath).unwrap();
+            let reader = DataFileReader::open(&fpath).unwrap();
 
             // write the entry
             let entry = DataFileEntry { tstamp, key, value: DataFileEntryValue::Data(value) };
             let idx = writer.append(&entry).unwrap();
-            writer.flush().unwrap();
+            writer.sync().unwrap();
 
             // read the entry
-            let entry_from_disk = unsafe { reader.entry_at(idx.len, idx.pos).unwrap() };
+            let entry_from_disk = unsafe { reader.entry(idx.len, idx.pos).unwrap() };
 
             // check if the read entry is the written entry
             entry.tstamp == entry_from_disk.tstamp &&
@@ -280,23 +267,24 @@ mod tests {
     quickcheck! {
         fn iterator_iterates_entries_written_by_writer(entries: Vec<(u128, Vec<u8>, Vec<u8>)>) -> bool {
             // setup reader and writer
-            let datafile = tempfile::Builder::new().append(true).tempfile().unwrap();
-            let iter = DataFileIterator::open(datafile.path()).unwrap();
-            let reader = DataFileReader::open(datafile.path()).unwrap();
-            let mut writer = DataFileWriter::try_from(datafile.into_file()).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let fpath = dir.as_ref().join("test");
+            let mut writer = DataFileWriter::create(&fpath).unwrap();
+            let mut iter = DataFileIterator::open(&fpath).unwrap();
+            let reader = DataFileReader::open(&fpath).unwrap();
 
             // write the entry
             for (tstamp, key, value) in entries.iter() {
                 let entry = DataFileEntry { tstamp: *tstamp, key: key.clone(), value: DataFileEntryValue::Data(value.clone()) };
                 writer.append(&entry).unwrap();
             }
-            writer.flush().unwrap();
+            writer.sync().unwrap();
 
             // read the entry
             let mut valid = true;
-            for ((tstamp, key, value), parse_result) in entries.iter().zip(iter) {
-                let (index, entry) = parse_result.unwrap();
-                let entry_from_reader = unsafe { reader.entry_at(index.len, index.pos).unwrap() };
+            for (tstamp, key, value) in entries.iter() {
+                let (index, entry) = iter.entry().unwrap().unwrap();
+                let entry_from_reader = unsafe { reader.entry(index.len, index.pos).unwrap() };
                 valid &= entry.tstamp == *tstamp &&
                     entry.key == *key &&
                     entry.value == DataFileEntryValue::Data(value.clone());

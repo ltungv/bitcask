@@ -4,8 +4,9 @@
 //! [Bitcask]: (https://riak.com/assets/bitcask-intro.pdf).
 //! [`engine::LogStructuredHashTable`]: opal::engine::LogStructuredHashTable
 
-mod datafile;
-mod hintfile;
+pub(crate) mod bufio;
+pub(crate) mod datafile;
+pub(crate) mod hintfile;
 
 use std::{
     cell::RefCell,
@@ -253,7 +254,7 @@ impl BitCaskWriter {
                 let prev_datafile_entry = {
                     let readers = self.readers.get_mut();
                     let reader = readers.get(&self.ctx.path, prev_index.fileid)?;
-                    unsafe { reader.entry_at(prev_index.len, prev_index.pos)? }
+                    unsafe { reader.entry(prev_index.len, prev_index.pos)? }
                 };
                 self.gc(prev_index.len)?;
                 match prev_datafile_entry.value {
@@ -277,7 +278,7 @@ impl BitCaskWriter {
                 let prev_datafile_entry = {
                     let readers = self.readers.get_mut();
                     let reader = readers.get(&self.ctx.path, prev_index.fileid)?;
-                    unsafe { reader.entry_at(prev_index.len, prev_index.pos)? }
+                    unsafe { reader.entry(prev_index.len, prev_index.pos)? }
                 };
                 // Write a tombstone value
                 self.writer.tombstone(timestamp(), key)?;
@@ -317,10 +318,10 @@ impl BitCaskWriter {
             let merge_pos = merge_datafile_writer.pos();
             let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
             unsafe {
-                reader.copy_raw(
+                reader.copy(
                     keydir_entry.len,
                     keydir_entry.pos,
-                    &mut merge_datafile_writer,
+                    merge_datafile_writer.writer(),
                 )?
             };
 
@@ -374,10 +375,11 @@ impl BitCaskReader {
     }
 
     fn get_by_index(&self, keydir_entry: &KeyDirEntry) -> Result<Vec<u8>, BitCaskError> {
-        let mut readers = self.readers.borrow_mut();
-        let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
-
-        let datafile_entry = unsafe { reader.entry_at(keydir_entry.len, keydir_entry.pos)? };
+        let datafile_entry = {
+            let mut readers = self.readers.borrow_mut();
+            let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
+            unsafe { reader.entry(keydir_entry.len, keydir_entry.pos)? }
+        };
 
         match datafile_entry.value {
             DataFileEntryValue::Data(v) => Ok(v),
@@ -448,9 +450,8 @@ where
     P: AsRef<Path>,
 {
     let mut garbage = 0;
-    let datafile_iter = DataFileIterator::open(path)?;
-    for parse_result in datafile_iter {
-        let (datafile_index, datafile_entry) = parse_result?;
+    let mut datafile_iter = DataFileIterator::open(path)?;
+    while let Some((datafile_index, datafile_entry)) = datafile_iter.entry()? {
         match datafile_entry.value {
             DataFileEntryValue::Tombstone => garbage += datafile_index.len,
             DataFileEntryValue::Data(_) => {
