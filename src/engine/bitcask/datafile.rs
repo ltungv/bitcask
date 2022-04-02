@@ -112,11 +112,12 @@ impl DataFileReader {
     /// can be parse into a `DataFileEntry`
     pub(crate) unsafe fn entry_at(
         &self,
-        index: &DataFileIndex,
+        len: u64,
+        pos: u64,
     ) -> Result<DataFileEntry, DataFileError> {
         let mmap = memmap2::MmapOptions::new()
-            .offset(index.pos)
-            .len(index.len as usize)
+            .offset(pos)
+            .len(len as usize)
             .map_copy_read_only(&self.0)?;
         let entry = bincode::deserialize(&mmap)?;
         Ok(entry)
@@ -128,15 +129,16 @@ impl DataFileReader {
     /// can be parse into a `DataFileEntry`
     pub(crate) unsafe fn copy_raw<W>(
         &self,
-        index: &DataFileIndex,
+        len: u64,
+        pos: u64,
         dst: &mut W,
     ) -> Result<(), DataFileError>
     where
         W: Write,
     {
         let mmap = memmap2::MmapOptions::new()
-            .offset(index.pos)
-            .len(index.len as usize)
+            .offset(pos)
+            .len(len as usize)
             .map_copy_read_only(&self.0)?;
         io::copy(&mut mmap.reader(), dst)?;
         Ok(())
@@ -169,7 +171,25 @@ impl DataFileWriter {
         Ok(writer)
     }
 
-    pub(crate) fn append(&mut self, entry: &DataFileEntry) -> Result<DataFileIndex, DataFileError> {
+    pub fn data(&mut self, tstamp: u128, key: &[u8], value: &[u8]) -> Result<DataFileIndex, DataFileError> {
+        let entry = DataFileEntry {
+            tstamp,
+            key: key.to_vec(),
+            value: DataFileEntryValue::Data(value.to_vec()),
+        };
+        self.append(&entry)
+    }
+
+    pub fn tombstone(&mut self, tstamp: u128, key: &[u8]) -> Result<DataFileIndex, DataFileError> {
+        let entry = DataFileEntry {
+            tstamp,
+            key: key.to_vec(),
+            value: DataFileEntryValue::Tombstone,
+        };
+        self.append(&entry)
+    }
+
+    fn append(&mut self, entry: &DataFileEntry) -> Result<DataFileIndex, DataFileError> {
         let pos = self.pos;
         bincode::serialize_into(&mut *self, entry)?;
         let len = self.pos - pos;
@@ -248,7 +268,7 @@ mod tests {
             writer.flush().unwrap();
 
             // read the entry
-            let entry_from_disk = unsafe { reader.entry_at(&idx).unwrap() };
+            let entry_from_disk = unsafe { reader.entry_at(idx.len, idx.pos).unwrap() };
 
             // check if the read entry is the written entry
             entry.tstamp == entry_from_disk.tstamp &&
@@ -276,7 +296,7 @@ mod tests {
             let mut valid = true;
             for ((tstamp, key, value), parse_result) in entries.iter().zip(iter) {
                 let (index, entry) = parse_result.unwrap();
-                let entry_from_reader = unsafe { reader.entry_at(&index).unwrap() };
+                let entry_from_reader = unsafe { reader.entry_at(index.len, index.pos).unwrap() };
                 valid &= entry.tstamp == *tstamp &&
                     entry.key == *key &&
                     entry.value == DataFileEntryValue::Data(value.clone());

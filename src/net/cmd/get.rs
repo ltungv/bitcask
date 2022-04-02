@@ -1,9 +1,9 @@
-use super::CommandParser;
+use super::{CommandError, CommandParser};
 use crate::{
     engine::KeyValueStore,
-    error::{Error, ErrorKind},
     net::{Connection, Frame},
 };
+use bytes::Bytes;
 use tracing::debug;
 
 /// Arguments for for GET command
@@ -29,13 +29,13 @@ impl Get {
     }
 
     /// Get GET command arguments from the command parser
-    pub fn parse(mut parser: CommandParser) -> Result<Self, Error> {
-        let key = parser
-            .get_string()?
-            .ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?;
+    pub fn parse(mut parser: CommandParser) -> Result<Self, CommandError> {
+        let key = parser.get_string()?.ok_or_else(|| CommandError::NoKey)?;
+
         if !parser.finish() {
-            return Err(Error::from(ErrorKind::InvalidFrame));
+            return Err(CommandError::Unconsumed);
         }
+
         Ok(Self { key })
     }
 
@@ -43,25 +43,28 @@ impl Get {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), Error>
+    pub async fn apply<KV>(
+        self,
+        storage: KV,
+        connection: &mut Connection,
+    ) -> Result<(), CommandError>
     where
         KV: KeyValueStore,
     {
         // Get the key's value
-        let result = tokio::task::spawn_blocking(move || storage.get(&self.key))
-            .await
-            .map_err(|e| Error::new(ErrorKind::AsyncTaskFailed, e))?;
+        let result = tokio::task::spawn_blocking(move || storage.get(self.key.as_bytes()))
+            .await?
+            .map_err(|e| CommandError::EngineError(e.into()))?;
 
         // Responding with the received value
         let response = match result {
-            Ok(val) => Frame::BulkString(val),
-            Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => Frame::Null,
-            Err(e) => return Err(e),
+            Some(val) => Frame::BulkString(Bytes::from(val)),
+            None => Frame::Null,
         };
         debug!(?response);
 
         // Write the response to the client
-        connection.write_frame(&response).await.unwrap();
+        connection.write_frame(&response).await?;
         Ok(())
     }
 }

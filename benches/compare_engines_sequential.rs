@@ -1,7 +1,6 @@
 mod common;
 
-use bytes::Bytes;
-use common::*;
+use common::{get_bitcask, get_dashmap, get_sled, prebuilt_kv_pairs};
 use criterion::{
     black_box, criterion_group, criterion_main, BatchSize, Bencher, Criterion, Throughput,
 };
@@ -19,9 +18,17 @@ const VAL_SIZE: usize = 1000;
 pub fn bench_write(c: &mut Criterion) {
     let mut g = c.benchmark_group("compare_engines_sequential_write");
     g.throughput(Throughput::Bytes((ITER * (KEY_SIZE + VAL_SIZE)) as u64));
-    g.bench_with_input("kvs", &engine::Type::LFS, sequential_write_bulk_bench);
+    g.bench_with_input(
+        "bitcask",
+        &engine::Type::BitCask,
+        sequential_write_bulk_bench,
+    );
     g.bench_with_input("sled", &engine::Type::Sled, sequential_write_bulk_bench);
-    g.bench_with_input("inmem", &engine::Type::InMem, sequential_write_bulk_bench);
+    g.bench_with_input(
+        "dashmap",
+        &engine::Type::DashMap,
+        sequential_write_bulk_bench,
+    );
     g.finish();
 }
 
@@ -29,10 +36,10 @@ fn sequential_write_bulk_bench(b: &mut Bencher, engine: &engine::Type) {
     let kv_pairs = prebuilt_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
 
     match *engine {
-        engine::Type::LFS => {
+        engine::Type::BitCask => {
             b.iter_batched(
                 || {
-                    let (engine, tmpdir) = get_lfs();
+                    let (engine, tmpdir) = get_bitcask();
                     (engine, kv_pairs.clone(), tmpdir)
                 },
                 sequential_write_bulk_bench_iter,
@@ -49,10 +56,10 @@ fn sequential_write_bulk_bench(b: &mut Bencher, engine: &engine::Type) {
                 BatchSize::SmallInput,
             );
         }
-        engine::Type::InMem => {
+        engine::Type::DashMap => {
             b.iter_batched(
                 || {
-                    let (engine, tmpdir) = get_inmem();
+                    let (engine, tmpdir) = get_dashmap();
                     (engine, kv_pairs.clone(), tmpdir)
                 },
                 sequential_write_bulk_bench_iter,
@@ -63,13 +70,13 @@ fn sequential_write_bulk_bench(b: &mut Bencher, engine: &engine::Type) {
 }
 
 fn sequential_write_bulk_bench_iter<E>(
-    (engine, kv_pairs, _tmpdir): (E, Vec<(String, Bytes)>, TempDir),
+    (engine, kv_pairs, _tmpdir): (E, Vec<(Vec<u8>, Vec<u8>)>, TempDir),
 ) where
     E: KeyValueStore,
 {
-    kv_pairs
-        .into_iter()
-        .for_each(|(k, v)| engine.set(black_box(k), black_box(v)).unwrap());
+    kv_pairs.into_iter().for_each(|(k, v)| {
+        engine.set(black_box(&k), black_box(&v)).unwrap();
+    });
 }
 
 /// Call get on a pre-populted key-value store instance for every benchmark iteration, the key
@@ -80,28 +87,29 @@ pub fn bench_read(c: &mut Criterion) {
     let mut g = c.benchmark_group("compare_engines_sequential_read");
     g.throughput(Throughput::Bytes((ITER * KEY_SIZE) as u64));
     {
-        let (engine, _tmpdir) = get_lfs();
-        g.bench_with_input("kvs", &(engine, &kv_pairs), sequential_read_bulk_bench);
+        let (engine, _tmpdir) = get_bitcask();
+        g.bench_with_input("bitcask", &(engine, &kv_pairs), sequential_read_bulk_bench);
     }
     {
         let (engine, _tmpdir) = get_sled();
         g.bench_with_input("sled", &(engine, &kv_pairs), sequential_read_bulk_bench);
     }
     {
-        let (engine, _tmpdir) = get_inmem();
-        g.bench_with_input("inmem", &(engine, &kv_pairs), sequential_read_bulk_bench);
+        let (engine, _tmpdir) = get_dashmap();
+        g.bench_with_input("dashmap", &(engine, &kv_pairs), sequential_read_bulk_bench);
     }
     g.finish();
 }
 
-fn sequential_read_bulk_bench<E>(b: &mut Bencher, (engine, kv_pairs): &(E, &Vec<(String, Bytes)>))
-where
+fn sequential_read_bulk_bench<E>(
+    b: &mut Bencher,
+    (engine, kv_pairs): &(E, &Vec<(Vec<u8>, Vec<u8>)>),
+) where
     E: KeyValueStore,
 {
-    kv_pairs
-        .iter()
-        .cloned()
-        .for_each(|(k, v)| engine.set(k, v).unwrap());
+    kv_pairs.iter().cloned().for_each(|(k, v)| {
+        engine.set(&k, &v).unwrap();
+    });
 
     b.iter_batched(
         || {
@@ -110,9 +118,9 @@ where
             kv_pairs
         },
         |kv_pairs| {
-            kv_pairs
-                .into_iter()
-                .for_each(|(k, v)| assert_eq!(v, engine.get(black_box(&k)).unwrap()));
+            kv_pairs.into_iter().for_each(|(k, v)| {
+                engine.get(black_box(&k)).unwrap();
+            });
         },
         BatchSize::SmallInput,
     );

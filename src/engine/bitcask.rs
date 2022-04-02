@@ -17,18 +17,15 @@ use std::{
     time,
 };
 
-use bytes::Bytes;
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use thiserror::Error;
 
 use super::KeyValueStore;
-use crate::error::{Error, ErrorKind};
 use datafile::{
-    DataFileEntry, DataFileEntryValue, DataFileError, DataFileIndex, DataFileIterator,
-    DataFileReader, DataFileWriter,
+    DataFileEntryValue, DataFileError, DataFileIterator, DataFileReader, DataFileWriter,
 };
-use hintfile::{HintFileEntry, HintFileError, HintFileIterator, HintFileWriter};
+use hintfile::{HintFileError, HintFileIterator, HintFileWriter};
 
 const DATAFILE_EXT: &str = "bitcask.data";
 
@@ -41,33 +38,25 @@ const GARBAGE_THRESHOLD: u64 = 1; // 4MB
 pub struct BitCaskKeyValueStore(pub BitCask);
 
 impl KeyValueStore for BitCaskKeyValueStore {
-    fn set(&self, key: String, value: bytes::Bytes) -> Result<(), crate::error::Error> {
-        self.0
-            .put(key.as_bytes(), &value)
-            .map_err(|e| Error::new(ErrorKind::CommandFailed, e))
+    type Error = BitCaskError;
+
+    fn set(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.0.put(key, value)
     }
 
-    fn get(&self, key: &str) -> Result<bytes::Bytes, crate::error::Error> {
-        self.0
-            .get(key.as_bytes())
-            .map(Bytes::from)
-            .map_err(|e| Error::new(ErrorKind::CommandFailed, e))
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.0.get(key)
     }
 
-    fn del(&self, key: &str) -> Result<(), crate::error::Error> {
-        self.0
-            .delete(key.as_bytes())
-            .map_err(|e| Error::new(ErrorKind::CommandFailed, e))
+    fn del(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.0.delete(key)
     }
 }
 
 #[derive(Error, Debug)]
 pub enum BitCaskError {
-    #[error("keydir's entry `{0:?}` points to an invalid file position")]
+    #[error("entry `{0:?}` is invalid")]
     BadKeyDirEntry(KeyDirEntry),
-
-    #[error("key `{0:?}` not found")]
-    KeyNotFound(Vec<u8>),
 
     #[error(transparent)]
     DataFile(#[from] DataFileError),
@@ -152,7 +141,7 @@ impl BitCask {
         Ok(BitCask { writer, readers })
     }
 
-    fn get(&self, key: &[u8]) -> Result<Vec<u8>, BitCaskError> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         let backoff = Backoff::new();
         loop {
             if let Some(reader) = self.readers.pop() {
@@ -167,11 +156,11 @@ impl BitCask {
         }
     }
 
-    fn put(&self, key: &[u8], value: &[u8]) -> Result<(), BitCaskError> {
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         self.writer.lock().unwrap().put(key, value)
     }
 
-    fn delete(&self, key: &[u8]) -> Result<(), BitCaskError> {
+    fn delete(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         self.writer.lock().unwrap().delete(key)
     }
 
@@ -245,14 +234,9 @@ impl BitCaskWriter {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), BitCaskError> {
+    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         let tstamp = timestamp();
-        let datafile_entry = DataFileEntry {
-            tstamp,
-            key: key.to_vec(),
-            value: DataFileEntryValue::Data(value.to_vec()),
-        };
-        let index = self.writer.append(&datafile_entry)?;
+        let index = self.writer.data(tstamp, key, value)?;
 
         let keydir_entry = KeyDirEntry {
             fileid: self.active_fileid,
@@ -260,11 +244,22 @@ impl BitCaskWriter {
             pos: index.pos,
             tstamp,
         };
-        if let Some(prev_index) = self.ctx.keydir.insert(key.to_vec(), keydir_entry) {
-            self.gc(prev_index.len)?;
-        };
 
-        Ok(())
+        match self.ctx.keydir.insert(key.to_vec(), keydir_entry) {
+            Some(prev_index) => {
+                let prev_datafile_entry = {
+                    let readers = self.readers.get_mut();
+                    let reader = readers.get(&self.ctx.path, prev_index.fileid)?;
+                    unsafe { reader.entry_at(prev_index.len, prev_index.pos)? }
+                };
+                self.gc(prev_index.len)?;
+                match prev_datafile_entry.value {
+                    DataFileEntryValue::Data(v) => Ok(Some(v)),
+                    DataFileEntryValue::Tombstone => Err(BitCaskError::BadKeyDirEntry(prev_index)),
+                }
+            }
+            None => Ok(None),
+        }
     }
 
     /// Delete a key and its value, if it exists.
@@ -273,22 +268,24 @@ impl BitCaskWriter {
     ///
     /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn delete(&mut self, key: &[u8]) -> Result<(), BitCaskError> {
+    fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         match self.ctx.keydir.remove(key) {
             Some((_, prev_index)) => {
-                // Write a tombstone value
-                let tstamp = timestamp();
-                let datafile_entry = DataFileEntry {
-                    tstamp,
-                    key: key.to_vec(),
-                    value: DataFileEntryValue::Tombstone,
+                let prev_datafile_entry = {
+                    let readers = self.readers.get_mut();
+                    let reader = readers.get(&self.ctx.path, prev_index.fileid)?;
+                    unsafe { reader.entry_at(prev_index.len, prev_index.pos)? }
                 };
-                self.writer.append(&datafile_entry)?;
+                // Write a tombstone value
+                self.writer.tombstone(timestamp(), key)?;
                 // Accumulated unused bytes count when we delete the given key
                 self.gc(prev_index.len)?;
-                Ok(())
+                match prev_datafile_entry.value {
+                    DataFileEntryValue::Data(v) => Ok(Some(v)),
+                    DataFileEntryValue::Tombstone => Err(BitCaskError::BadKeyDirEntry(prev_index)),
+                }
             }
-            None => Err(BitCaskError::KeyNotFound(key.to_vec())),
+            None => Ok(None),
         }
     }
 
@@ -314,24 +311,25 @@ impl BitCaskWriter {
 
         let mut readers = self.readers.borrow_mut();
         for mut keydir_entry in self.ctx.keydir.iter_mut() {
-            let datafile_index = DataFileIndex {
-                len: keydir_entry.len,
-                pos: keydir_entry.pos,
-            };
             let merge_pos = merge_datafile_writer.pos();
             let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
-            unsafe { reader.copy_raw(&datafile_index, &mut merge_datafile_writer)? };
+            unsafe {
+                reader.copy_raw(
+                    keydir_entry.len,
+                    keydir_entry.pos,
+                    &mut merge_datafile_writer,
+                )?
+            };
 
             keydir_entry.fileid = merge_fileid;
             keydir_entry.pos = merge_pos;
 
-            let hintfile_entry = HintFileEntry {
-                tstamp: keydir_entry.tstamp,
-                len: keydir_entry.len,
-                pos: keydir_entry.pos,
-                key: keydir_entry.key().clone(),
-            };
-            merge_hintfile_writer.append(&hintfile_entry)?;
+            merge_hintfile_writer.append(
+                keydir_entry.tstamp,
+                keydir_entry.len,
+                keydir_entry.pos,
+                keydir_entry.key(),
+            )?;
         }
 
         let stale_fileids = readers.stale_fileids(merge_fileid);
@@ -342,7 +340,9 @@ impl BitCaskWriter {
             if hintfile_path.exists() {
                 fs::remove_file(hintfile_path)?;
             }
-            fs::remove_file(self.ctx.path.join(datafile_name(id)))?;
+
+            let datafile_path = self.ctx.path.join(hintfile_name(id));
+            fs::remove_file(datafile_path)?;
         }
 
         self.garbage = 0;
@@ -360,12 +360,12 @@ struct BitCaskReader {
 }
 
 impl BitCaskReader {
-    fn get(&self, key: &[u8]) -> Result<Vec<u8>, BitCaskError> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         match self.ctx.keydir.get(key) {
-            None => Err(BitCaskError::KeyNotFound(key.to_vec())),
+            None => Ok(None),
             Some(index) => {
                 self.drop_stale_readers();
-                Ok(self.get_by_index(index.value())?)
+                Ok(Some(self.get_by_index(index.value())?))
             }
         }
     }
@@ -374,12 +374,7 @@ impl BitCaskReader {
         let mut readers = self.readers.borrow_mut();
         let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
 
-        let datafile_entry = unsafe {
-            reader.entry_at(&DataFileIndex {
-                len: keydir_entry.len,
-                pos: keydir_entry.pos,
-            })?
-        };
+        let datafile_entry = unsafe { reader.entry_at(keydir_entry.len, keydir_entry.pos)? };
 
         match datafile_entry.value {
             DataFileEntryValue::Data(v) => Ok(v),

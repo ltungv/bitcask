@@ -1,5 +1,4 @@
 use opal::{
-    error::Error,
     net::Client,
     telemetry::{get_subscriber, init_subscriber},
 };
@@ -7,7 +6,7 @@ use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<(), anyhow::Error> {
     // Setup global `tracing` subscriber
     let subscriber = get_subscriber("opal".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);

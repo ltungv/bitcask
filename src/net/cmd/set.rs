@@ -1,7 +1,6 @@
-use super::CommandParser;
+use super::{CommandError, CommandParser};
 use crate::{
     engine::KeyValueStore,
-    error::{Error, ErrorKind},
     net::{Connection, Frame},
 };
 use bytes::Bytes;
@@ -39,17 +38,14 @@ impl Set {
     }
 
     /// Get SET command arguments from the command parser
-    pub fn parse(mut parser: CommandParser) -> Result<Self, Error> {
-        let key = parser
-            .get_string()?
-            .ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?;
-        let value = parser
-            .get_bytes()?
-            .ok_or_else(|| Error::from(ErrorKind::InvalidFrame))?;
+    pub fn parse(mut parser: CommandParser) -> Result<Self, CommandError> {
+        let key = parser.get_string()?.ok_or_else(|| CommandError::NoKey)?;
+        let value = parser.get_bytes()?.ok_or_else(|| CommandError::NoValue)?;
 
         if !parser.finish() {
-            return Err(Error::from(ErrorKind::InvalidFrame));
+            return Err(CommandError::Unconsumed);
         }
+
         Ok(Self { key, value })
     }
 
@@ -57,21 +53,25 @@ impl Set {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), Error>
+    pub async fn apply<KV>(
+        self,
+        storage: KV,
+        connection: &mut Connection,
+    ) -> Result<(), CommandError>
     where
         KV: KeyValueStore,
     {
         // Set the key's value
-        tokio::task::spawn_blocking(move || storage.set(self.key, self.value))
-            .await
-            .map_err(|e| Error::new(ErrorKind::AsyncTaskFailed, e))??;
+        tokio::task::spawn_blocking(move || storage.set(self.key.as_bytes(), &self.value))
+            .await?
+            .map_err(|e| CommandError::EngineError(e.into()))?;
 
         // Responding OK
         let response = Frame::SimpleString("OK".to_string());
         debug!(?response);
 
         // Write the response to the client
-        connection.write_frame(&response).await.unwrap();
+        connection.write_frame(&response).await?;
         Ok(())
     }
 }

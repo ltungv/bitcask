@@ -1,8 +1,4 @@
-use crate::{
-    engine::KeyValueStore,
-    error::{Error, ErrorKind},
-};
-use bytes::Bytes;
+use crate::engine::KeyValueStore;
 
 /// A key-value store that uses sled as the underlying data storage engine
 #[derive(Debug, Clone)]
@@ -18,27 +14,17 @@ impl SledKeyValueStore {
 }
 
 impl KeyValueStore for SledKeyValueStore {
-    fn set(&self, key: String, value: Bytes) -> Result<(), Error> {
-        self.db
-            .insert(key, value.to_vec())
-            .map_err(|e| Error::new(ErrorKind::CommandFailed, e))?;
-        Ok(())
+    type Error = sled::Error;
+
+    fn set(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.db.insert(key, value).map(|v| v.map(|v| v.to_vec()))
     }
 
-    fn get(&self, key: &str) -> Result<Bytes, Error> {
-        let val = self
-            .db
-            .get(key)
-            .map_err(|e| Error::new(ErrorKind::CommandFailed, e))?
-            .ok_or_else(|| Error::from(ErrorKind::KeyNotFound))?;
-        Ok(Bytes::copy_from_slice(val.as_ref()))
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.db.get(key).map(|v| v.map(|v| v.to_vec()))
     }
 
-    fn del(&self, key: &str) -> Result<(), Error> {
-        self.db
-            .remove(key)
-            .map_err(|e| Error::new(ErrorKind::CommandFailed, e))?
-            .ok_or_else(|| Error::from(ErrorKind::KeyNotFound))?;
-        Ok(())
+    fn del(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.db.remove(key).map(|v| v.map(|v| v.to_vec()))
     }
 }

@@ -25,7 +25,9 @@ pub fn bench_write(c: &mut Criterion) {
                     rayon::scope(move |s| {
                         kv_pairs.into_iter().for_each(|(k, v)| {
                             let engine = engine.clone();
-                            s.spawn(move |_| engine.set(black_box(k), black_box(v)).unwrap());
+                            s.spawn(move |_| {
+                                engine.set(black_box(&k), black_box(&v)).unwrap();
+                            });
                         });
                     });
                 },
@@ -40,10 +42,9 @@ pub fn bench_read(c: &mut Criterion) {
     let pool = get_threadpool(num_cpus::get_physical());
 
     let (engine, _tmpdir) = get_bitcask();
-    kv_pairs
-        .iter()
-        .cloned()
-        .for_each(|(k, v)| engine.set(k, v).unwrap());
+    kv_pairs.iter().cloned().for_each(|(k, v)| {
+        engine.set(&k, &v).unwrap();
+    });
 
     c.bench_function("lfs_concurrent_read", |b| {
         pool.install(|| {
@@ -55,9 +56,11 @@ pub fn bench_read(c: &mut Criterion) {
                 },
                 |(engine, kv_pairs)| {
                     rayon::scope(move |s| {
-                        kv_pairs.into_iter().for_each(|(k, v)| {
+                        kv_pairs.into_iter().for_each(|(k, _)| {
                             let engine = engine.clone();
-                            s.spawn(move |_| assert_eq!(v, engine.get(black_box(&k)).unwrap()));
+                            s.spawn(move |_| {
+                                engine.get(black_box(&k)).unwrap();
+                            });
                         });
                     })
                 },

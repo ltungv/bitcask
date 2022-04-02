@@ -84,8 +84,20 @@ impl HintFileWriter {
         Ok(writer)
     }
 
-    pub(crate) fn append(&mut self, entry: &HintFileEntry) -> Result<(), HintFileError> {
-        bincode::serialize_into(&mut *self, entry)?;
+    pub(crate) fn append(
+        &mut self,
+        tstamp: u128,
+        len: u64,
+        pos: u64,
+        key: &[u8],
+    ) -> Result<(), HintFileError> {
+        let entry = HintFileEntry {
+            tstamp,
+            len,
+            pos,
+            key: key.to_vec(),
+        };
+        bincode::serialize_into(&mut *self, &entry)?;
         Ok(())
     }
 }
@@ -122,8 +134,7 @@ mod tests {
             let mut writer = HintFileWriter::try_from(datafile).unwrap();
 
             // write the entry
-            let entry = HintFileEntry { tstamp, len, pos, key };
-            writer.append(&entry).unwrap();
+            writer.append(tstamp, len, pos, &key).unwrap();
             writer.flush().unwrap();
 
             true
@@ -139,8 +150,7 @@ mod tests {
 
             // write the entry
             for (tstamp, len, pos, key) in entries.iter() {
-                let entry = HintFileEntry { tstamp: *tstamp, len: *len, pos: *pos, key: key.clone() };
-                writer.append(&entry).unwrap();
+                writer.append(*tstamp, *len, *pos, key).unwrap();
             }
             writer.flush().unwrap();
 

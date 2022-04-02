@@ -1,43 +1,41 @@
 //! Define the interface for a storage engine and different implementations of that interface.
 
 mod bitcask;
-mod inmem;
-mod lfs;
+mod dashmapkv;
 mod sledkv;
 
-use crate::error::Error;
-pub use bitcask::{BitCaskConfig,BitCaskKeyValueStore};
-use bytes::Bytes;
-pub use inmem::InMemoryStorage;
-pub use lfs::LogStructuredHashTable;
+pub use bitcask::{BitCaskConfig, BitCaskKeyValueStore};
+pub use dashmapkv::DashMapKeyValueStore;
 pub use sledkv::SledKeyValueStore;
+
 use std::str::FromStr;
 
 /// A basic interface for a thread-safe key-value store that ensure consistent access to shared
 /// data from multiple different threads.
 pub trait KeyValueStore: Clone + Send + 'static {
-    /// Set the value of a key, overwriting any existing value at that key.
-    ///
-    /// # Error
-    ///
-    /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn set(&self, key: String, value: Bytes) -> Result<(), Error>;
+    type Error: std::error::Error + Send + Sync;
 
-    /// Get the value of a key, if it exists.
+    /// Set the value of a key, overwriting any existing value at that key and return the overwritten
+    /// value
     ///
     /// # Error
     ///
-    /// If the queried key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn get(&self, key: &str) -> Result<Bytes, Error>;
+    fn set(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
 
-    /// Delete a key and its value, if it exists.
+    /// Get the value of a key, if it exists. Return `None` if there's no value for the given key
     ///
     /// # Error
     ///
-    /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn del(&self, key: &str) -> Result<(), Error>;
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
+
+    /// Delete a key and return its value, if it exists. Return `None` if the key does not exist
+    ///
+    /// # Error
+    ///
+    /// Errors from I/O operations and serializations/deserializations will be propagated.
+    fn del(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
 }
 
 /// Supported type of engine.
@@ -45,12 +43,10 @@ pub trait KeyValueStore: Clone + Send + 'static {
 pub enum Type {
     /// BitCask engine.
     BitCask,
-    /// Log-structure file systems engine.
-    LFS,
     /// Sled database engine.
     Sled,
     /// In-memory engine.
-    InMem,
+    DashMap,
 }
 
 impl FromStr for Type {
@@ -59,9 +55,8 @@ impl FromStr for Type {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().trim() {
             "bitcask" => Ok(Self::BitCask),
-            "lfs" => Ok(Self::LFS),
             "sled" => Ok(Self::Sled),
-            "memory" => Ok(Self::InMem),
+            "dashmap" => Ok(Self::DashMap),
             _ => Err("unsupported"),
         }
     }

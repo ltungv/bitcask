@@ -8,8 +8,9 @@ mod frame;
 mod server;
 mod shutdown;
 
-pub use client::Client;
-pub use connection::Connection;
-pub use frame::Frame;
-pub use server::Server;
+pub use client::{Client, ClientError};
+pub use cmd::{Command, CommandError};
+pub use connection::{Connection, ConnectionError};
+pub use frame::{Frame, FrameError};
+pub use server::{Server, ServerError};
 pub use shutdown::Shutdown;

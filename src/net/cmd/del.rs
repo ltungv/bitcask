@@ -1,7 +1,6 @@
-use super::CommandParser;
+use super::{CommandError, CommandParser};
 use crate::{
     engine::KeyValueStore,
-    error::{Error, ErrorKind},
     net::{Connection, Frame},
 };
 use tracing::debug;
@@ -31,14 +30,14 @@ impl Del {
     }
 
     /// Get DEL command arguments from the command parser
-    pub fn parse(mut parser: CommandParser) -> Result<Self, Error> {
+    pub fn parse(mut parser: CommandParser) -> Result<Self, CommandError> {
         let mut keys = Vec::new();
         while let Some(key) = parser.get_string()? {
             keys.push(key);
         }
 
         if keys.is_empty() {
-            return Err(Error::from(ErrorKind::InvalidFrame));
+            return Err(CommandError::NoKey);
         }
         Ok(Self { keys })
     }
@@ -47,7 +46,11 @@ impl Del {
     ///
     /// [`StorageEngine`]: crate::StorageEngine;
     #[tracing::instrument(skip(self, storage, connection))]
-    pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), Error>
+    pub async fn apply<KV>(
+        self,
+        storage: KV,
+        connection: &mut Connection,
+    ) -> Result<(), CommandError>
     where
         KV: KeyValueStore,
     {
@@ -55,23 +58,23 @@ impl Del {
         let count = tokio::task::spawn_blocking(move || {
             let mut count = 0;
             for key in &self.keys {
-                match storage.del(key) {
-                    Ok(_) => count += 1,
-                    Err(e) if e.kind() == Some(ErrorKind::KeyNotFound) => continue,
+                match storage.del(key.as_bytes()) {
+                    Ok(Some(_)) => count += 1,
+                    Ok(None) => continue,
                     Err(e) => return Err(e),
                 };
             }
             Ok(count)
         })
-        .await
-        .map_err(|e| Error::new(ErrorKind::AsyncTaskFailed, e))??;
+        .await?
+        .map_err(|e: KV::Error| CommandError::EngineError(e.into()))?;
 
         // Responding with the number of deletions
         let response = Frame::Integer(count);
         debug!(?response);
 
         // Write the response to the client
-        connection.write_frame(&response).await.unwrap();
+        connection.write_frame(&response).await?;
         Ok(())
     }
 }

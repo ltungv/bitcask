@@ -1,12 +1,12 @@
 //! Asynchronous server for the storage engine that communicates with RESP protocol.
 
-use super::Connection;
+use super::{CommandError, Connection, ConnectionError};
 use crate::{
     engine::KeyValueStore,
-    error::Error,
     net::{cmd::Command, Shutdown},
 };
-use std::{convert::TryFrom, future::Future, sync::Arc, time::Duration};
+use std::{convert::TryFrom, future::Future, io, sync::Arc, time::Duration};
+use thiserror::Error;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{broadcast, mpsc, Semaphore},
@@ -20,6 +20,18 @@ const MAX_CONNECTIONS: usize = 128;
 /// Max number of seconds to wait for when retrying to accept a new connection.
 /// The value is in second.
 const MAX_BACKOFF: u64 = 64;
+
+#[derive(Error, Debug)]
+pub enum ServerError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Connection(#[from] ConnectionError),
+
+    #[error(transparent)]
+    Command(#[from] CommandError),
+}
 
 /// Provide methods and hold states for a Redis server. The server will exist when `shutdown`
 /// finishes, or when there's an error.
@@ -136,14 +148,14 @@ impl<KV> Context<KV> {
     /// to maximum allowed time, returns an error.
     ///
     /// [`TcpStream`]: tokio::net::TcpStream
-    async fn accept(&mut self) -> Result<TcpStream, Error> {
+    async fn accept(&mut self) -> Result<TcpStream, ServerError> {
         let mut backoff = 1;
         loop {
             match self.listener.accept().await {
                 Ok((socket, _)) => return Ok(socket),
                 Err(err) => {
                     if backoff > MAX_BACKOFF {
-                        return Err(err.into());
+                        Err(err)?;
                     }
                 }
             }
@@ -161,7 +173,7 @@ impl<KV> Context<KV>
 where
     KV: KeyValueStore,
 {
-    async fn listen(&mut self) -> Result<(), Error> {
+    async fn listen(&mut self) -> Result<(), ServerError> {
         info!("listening for new connections");
 
         loop {
@@ -229,7 +241,7 @@ where
     /// When the shutdown signal is received, the connection is processed until
     /// it reaches a safe state, at which point it is terminated.
     #[tracing::instrument(skip(self))]
-    async fn run(mut self) -> Result<(), Error> {
+    async fn run(mut self) -> Result<(), ServerError> {
         // Keeps ingesting frames when the server is still running
         while !self.shutdown.is_shutdown() {
             // Awaiting for a shutdown event or a new frame

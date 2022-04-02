@@ -1,7 +1,6 @@
 mod common;
 
-use bytes::Bytes;
-use common::*;
+use common::{get_bitcask, get_dashmap, get_sled, get_threadpool, prebuilt_kv_pairs};
 use criterion::{
     black_box, criterion_group, criterion_main, BatchSize, Bencher, BenchmarkId, Criterion,
     Throughput,
@@ -26,8 +25,8 @@ pub fn bench_write(c: &mut Criterion) {
         .step_by(2)
         .for_each(|nthreads| {
             g.bench_with_input(
-                BenchmarkId::new("lfs", nthreads),
-                &(engine::Type::LFS, nthreads),
+                BenchmarkId::new("bitcask", nthreads),
+                &(engine::Type::BitCask, nthreads),
                 concurrent_write_bulk_bench,
             );
             g.bench_with_input(
@@ -36,8 +35,8 @@ pub fn bench_write(c: &mut Criterion) {
                 concurrent_write_bulk_bench,
             );
             g.bench_with_input(
-                BenchmarkId::new("inmem", nthreads),
-                &(engine::Type::InMem, nthreads),
+                BenchmarkId::new("dashmap", nthreads),
+                &(engine::Type::DashMap, nthreads),
                 concurrent_write_bulk_bench,
             );
         });
@@ -52,11 +51,11 @@ fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Ty
         .unwrap();
 
     match *engine {
-        engine::Type::LFS => {
+        engine::Type::BitCask => {
             pool.install(|| {
                 b.iter_batched(
                     || {
-                        let (engine, tmpdir) = get_lfs();
+                        let (engine, tmpdir) = get_bitcask();
                         (engine, kv_pairs.clone(), tmpdir)
                     },
                     concurrent_write_bulk_bench_iter,
@@ -76,11 +75,11 @@ fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Ty
                 )
             });
         }
-        engine::Type::InMem => {
+        engine::Type::DashMap => {
             pool.install(|| {
                 b.iter_batched(
                     || {
-                        let (engine, tmpdir) = get_inmem();
+                        let (engine, tmpdir) = get_dashmap();
                         (engine, kv_pairs.clone(), tmpdir)
                     },
                     concurrent_write_bulk_bench_iter,
@@ -92,14 +91,16 @@ fn concurrent_write_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Ty
 }
 
 fn concurrent_write_bulk_bench_iter<E>(
-    (engine, kv_pairs, _tmpdir): (E, Vec<(String, Bytes)>, TempDir),
+    (engine, kv_pairs, _tmpdir): (E, Vec<(Vec<u8>, Vec<u8>)>, TempDir),
 ) where
     E: KeyValueStore,
 {
     rayon::scope(move |s| {
         kv_pairs.into_iter().for_each(|(k, v)| {
             let engine = engine.clone();
-            s.spawn(move |_| engine.set(black_box(k), black_box(v)).unwrap());
+            s.spawn(move |_| {
+                engine.set(black_box(&k), black_box(&v)).unwrap();
+            });
         });
     });
 }
@@ -114,8 +115,8 @@ pub fn bench_read(c: &mut Criterion) {
         .step_by(2)
         .for_each(|nthreads| {
             g.bench_with_input(
-                BenchmarkId::new("kvs", nthreads),
-                &(engine::Type::LFS, nthreads),
+                BenchmarkId::new("bitcask", nthreads),
+                &(engine::Type::BitCask, nthreads),
                 concurrent_read_bulk_bench,
             );
             g.bench_with_input(
@@ -124,8 +125,8 @@ pub fn bench_read(c: &mut Criterion) {
                 concurrent_read_bulk_bench,
             );
             g.bench_with_input(
-                BenchmarkId::new("inmem", nthreads),
-                &(engine::Type::InMem, nthreads),
+                BenchmarkId::new("dashmap", nthreads),
+                &(engine::Type::DashMap, nthreads),
                 concurrent_read_bulk_bench,
             );
         });
@@ -138,12 +139,11 @@ fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Typ
 
     let mut rng = StdRng::from_seed([0u8; 32]);
     match *engine {
-        engine::Type::LFS => {
-            let (engine, _tmpdir) = get_lfs();
-            kv_pairs
-                .iter()
-                .cloned()
-                .for_each(|(k, v)| engine.set(k, v).unwrap());
+        engine::Type::BitCask => {
+            let (engine, _tmpdir) = get_bitcask();
+            kv_pairs.iter().cloned().for_each(|(k, v)| {
+                engine.set(&k, &v).unwrap();
+            });
 
             pool.install(move || {
                 b.iter_batched(
@@ -159,10 +159,9 @@ fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Typ
         }
         engine::Type::Sled => {
             let (engine, _tmpdir) = get_sled();
-            kv_pairs
-                .iter()
-                .cloned()
-                .for_each(|(k, v)| engine.set(k, v).unwrap());
+            kv_pairs.iter().cloned().for_each(|(k, v)| {
+                engine.set(&k, &v).unwrap();
+            });
 
             pool.install(move || {
                 b.iter_batched(
@@ -176,12 +175,11 @@ fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Typ
                 )
             });
         }
-        engine::Type::InMem => {
-            let (engine, _tmpdir) = get_inmem();
-            kv_pairs
-                .iter()
-                .cloned()
-                .for_each(|(k, v)| engine.set(k, v).unwrap());
+        engine::Type::DashMap => {
+            let (engine, _tmpdir) = get_dashmap();
+            kv_pairs.iter().cloned().for_each(|(k, v)| {
+                engine.set(&k, &v).unwrap();
+            });
 
             pool.install(move || {
                 b.iter_batched(
@@ -198,14 +196,16 @@ fn concurrent_read_bulk_bench(b: &mut Bencher, (engine, nthreads): &(engine::Typ
     }
 }
 
-fn concurrent_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<(String, Bytes)>))
+fn concurrent_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<(Vec<u8>, Vec<u8>)>))
 where
     E: KeyValueStore,
 {
     rayon::scope(move |s| {
         kv_pairs.into_iter().for_each(|(k, v)| {
             let engine = engine.clone();
-            s.spawn(move |_| assert_eq!(v, engine.get(black_box(&k)).unwrap()));
+            s.spawn(move |_| {
+                engine.get(black_box(&k)).unwrap();
+            });
         });
     })
 }
