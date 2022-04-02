@@ -1,6 +1,5 @@
-use anyhow::Context;
 use opal::{
-    engine::{self, BitCaskConfig, BitCaskKeyValueStore},
+    engine::{self, BitCaskConfig, BitCaskKeyValueStore, DashMapKeyValueStore, SledKeyValueStore},
     net::Server,
     telemetry::{get_subscriber, init_subscriber},
 };
@@ -20,55 +19,34 @@ pub async fn main() -> Result<(), anyhow::Error> {
     // Bind a TCP listener
     let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
 
-    let db_dir = cli.path.unwrap_or(env::current_dir()?);
-    fs::create_dir_all(&db_dir)?;
+    match cli.typ {
+        engine::Type::BitCask => {
+            let db_dir = cli.path.unwrap_or(env::current_dir()?);
+            fs::create_dir_all(&db_dir)?;
 
-    let storage = BitCaskKeyValueStore(
-        BitCaskConfig::default()
-            .concurrency(cli.nthreads)
-            .open(db_dir)
-            .context("could not start BitCask engine")?,
-    );
-    let server = Server::new(listener, storage, signal::ctrl_c());
-    server.run().await;
+            let storage = BitCaskKeyValueStore(
+                BitCaskConfig::default()
+                    .concurrency(cli.nthreads)
+                    .open(db_dir)?,
+            );
+            let server = Server::new(listener, storage, signal::ctrl_c());
+            server.run().await;
+        }
+        engine::Type::Sled => {
+            let db_dir = cli.path.unwrap_or(env::current_dir()?);
+            fs::create_dir_all(&db_dir)?;
 
-    // match cli.typ {
-    //     engine::Type::BitCask => {
-    //         let db_dir = cli.path.unwrap_or(env::current_dir()?);
-    //         fs::create_dir_all(&db_dir)?;
-
-    //         let storage = BitCaskKeyValueStore(
-    //             BitCaskConfig::default()
-    //                 .concurrency(cli.nthreads)
-    //                 .open(db_dir)
-    //                 .map_err(|e| Error::new(ErrorKind::CommandFailed, e))?,
-    //         );
-    //         let server = Server::new(listener, storage, signal::ctrl_c());
-    //         server.run().await;
-    //     }
-    //     engine::Type::LFS => {
-    //         let db_dir = cli.path.unwrap_or(env::current_dir()?);
-    //         fs::create_dir_all(&db_dir)?;
-
-    //         let storage = LogStructuredHashTable::open(&db_dir, cli.nthreads)?;
-    //         let server = Server::new(listener, storage, signal::ctrl_c());
-    //         server.run().await;
-    //     }
-    //     engine::Type::Sled => {
-    //         let db_dir = cli.path.unwrap_or(env::current_dir()?);
-    //         fs::create_dir_all(&db_dir)?;
-
-    //         let db = sled::Config::default().path(db_dir).open().unwrap();
-    //         let storage = SledKeyValueStore::new(db);
-    //         let server = Server::new(listener, storage, signal::ctrl_c());
-    //         server.run().await;
-    //     }
-    //     engine::Type::InMem => {
-    //         let storage = InMemoryStorage::default();
-    //         let server = Server::new(listener, storage, signal::ctrl_c());
-    //         server.run().await;
-    //     }
-    // }
+            let db = sled::Config::default().path(db_dir).open().unwrap();
+            let storage = SledKeyValueStore::new(db);
+            let server = Server::new(listener, storage, signal::ctrl_c());
+            server.run().await;
+        }
+        engine::Type::DashMap => {
+            let storage = DashMapKeyValueStore::default();
+            let server = Server::new(listener, storage, signal::ctrl_c());
+            server.run().await;
+        }
+    }
 
     Ok(())
 }

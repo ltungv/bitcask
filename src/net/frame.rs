@@ -12,9 +12,6 @@ pub enum FrameError {
     #[error("incomplete frame")]
     Incomplete,
 
-    #[error("invalid integer string (got {0:?})")]
-    NotInteger(Vec<u8>),
-
     #[error("invalid starting byte (got {0})")]
     BadFrameStart(u8),
 
@@ -23,6 +20,9 @@ pub enum FrameError {
 
     #[error("invalid length (got {0})")]
     BadLength(i64),
+
+    #[error("invalid integer string (got {0:?})")]
+    NotInteger(Vec<u8>),
 
     #[error("invalid utf8 string (got {0:?})")]
     NotUtf8(#[from] std::string::FromUtf8Error),

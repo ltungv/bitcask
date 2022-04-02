@@ -32,8 +32,9 @@ const DATAFILE_EXT: &str = "bitcask.data";
 const HINTFILE_EXT: &str = "bitcask.hint";
 
 /// Merge log files when then number of unused bytes across all files exceeds this limit.
-const GARBAGE_THRESHOLD: u64 = 1; // 4MB
+const GARBAGE_THRESHOLD: u64 = 4 * 1024 * 1024; // 4MB
 
+/// A wrapper around [`BitCask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
 pub struct BitCaskKeyValueStore(pub BitCask);
 
@@ -53,6 +54,7 @@ impl KeyValueStore for BitCaskKeyValueStore {
     }
 }
 
+/// Error returned by this module
 #[derive(Error, Debug)]
 pub enum BitCaskError {
     #[error("entry `{0:?}` is invalid")]
@@ -68,6 +70,7 @@ pub enum BitCaskError {
     Io(#[from] io::Error),
 }
 
+/// Configuration for a `BitCask` instance.
 #[derive(Debug)]
 pub struct BitCaskConfig {
     concurrency: usize,

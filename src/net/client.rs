@@ -11,6 +11,12 @@ use tracing::debug;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
+    #[error("connection reset by peer")]
+    ConnectionReset,
+
+    #[error("error from server `{0}`")]
+    ServerFailed(String),
+
     #[error("unexpected frame (got {0:?})")]
     BadResponse(Frame),
 
@@ -22,12 +28,6 @@ pub enum ClientError {
 
     #[error(transparent)]
     Connection(#[from] ConnectionError),
-
-    #[error("connection reset by peer")]
-    ConnectionReset,
-
-    #[error("error from server `{0}`")]
-    FromServer(String),
 }
 
 /// Provide methods and hold states for manging a connection to a Redis server.
@@ -129,7 +129,7 @@ impl Client {
         debug!(response = ?frame);
 
         match frame {
-            Some(Frame::Error(err)) => Err(ClientError::FromServer(err)),
+            Some(Frame::Error(err)) => Err(ClientError::ServerFailed(err)),
             Some(frame) => Ok(frame),
             None => {
                 // Server closes socket without sending data

@@ -155,7 +155,7 @@ impl<KV> Context<KV> {
                 Ok((socket, _)) => return Ok(socket),
                 Err(err) => {
                     if backoff > MAX_BACKOFF {
-                        Err(err)?;
+                        return Err(err.into());
                     }
                 }
             }

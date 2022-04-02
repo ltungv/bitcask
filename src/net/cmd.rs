@@ -27,16 +27,16 @@ pub enum CommandError {
     NoValue,
 
     #[error("found unconsumed data")]
-    Unconsumed,
-
-    #[error("invalid integer string (got {0:?})")]
-    NotInteger(Vec<u8>),
+    FoundUnconsumedData,
 
     #[error("invalid frame (got {0:?})")]
     BadFrame(Frame),
 
     #[error("invalid command (got {0:?})")]
     BadCommand(Vec<u8>),
+
+    #[error("invalid integer string (got {0:?})")]
+    NotInteger(Vec<u8>),
 
     #[error(transparent)]
     NotUtf8(#[from] std::string::FromUtf8Error),
@@ -48,7 +48,7 @@ pub enum CommandError {
     Connection(#[from] ConnectionError),
 
     #[error("engine failed - {0}")]
-    EngineError(#[source] anyhow::Error),
+    KeyValueStoreFailed(#[source] anyhow::Error),
 }
 
 /// Enumeration of all the supported Redis commands. Each commands

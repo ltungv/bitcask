@@ -39,13 +39,11 @@ impl Set {
 
     /// Get SET command arguments from the command parser
     pub fn parse(mut parser: CommandParser) -> Result<Self, CommandError> {
-        let key = parser.get_string()?.ok_or_else(|| CommandError::NoKey)?;
-        let value = parser.get_bytes()?.ok_or_else(|| CommandError::NoValue)?;
-
+        let key = parser.get_string()?.ok_or(CommandError::NoKey)?;
+        let value = parser.get_bytes()?.ok_or(CommandError::NoValue)?;
         if !parser.finish() {
-            return Err(CommandError::Unconsumed);
+            return Err(CommandError::FoundUnconsumedData);
         }
-
         Ok(Self { key, value })
     }
 
@@ -64,7 +62,7 @@ impl Set {
         // Set the key's value
         tokio::task::spawn_blocking(move || storage.set(self.key.as_bytes(), &self.value))
             .await?
-            .map_err(|e| CommandError::EngineError(e.into()))?;
+            .map_err(|e| CommandError::KeyValueStoreFailed(e.into()))?;
 
         // Responding OK
         let response = Frame::SimpleString("OK".to_string());

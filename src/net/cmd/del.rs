@@ -35,7 +35,6 @@ impl Del {
         while let Some(key) = parser.get_string()? {
             keys.push(key);
         }
-
         if keys.is_empty() {
             return Err(CommandError::NoKey);
         }
@@ -67,7 +66,7 @@ impl Del {
             Ok(count)
         })
         .await?
-        .map_err(|e: KV::Error| CommandError::EngineError(e.into()))?;
+        .map_err(|e: KV::Error| CommandError::KeyValueStoreFailed(e.into()))?;
 
         // Responding with the number of deletions
         let response = Frame::Integer(count);

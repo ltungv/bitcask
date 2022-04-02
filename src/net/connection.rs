@@ -97,7 +97,7 @@ where
             // Not enough data has been buffered
             Err(FrameError::Incomplete) => Ok(None),
             // An error was encountered
-            Err(e) => Err(e)?,
+            Err(e) => Err(e.into()),
         }
     }
 

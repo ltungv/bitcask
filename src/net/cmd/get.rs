@@ -30,12 +30,10 @@ impl Get {
 
     /// Get GET command arguments from the command parser
     pub fn parse(mut parser: CommandParser) -> Result<Self, CommandError> {
-        let key = parser.get_string()?.ok_or_else(|| CommandError::NoKey)?;
-
+        let key = parser.get_string()?.ok_or(CommandError::NoKey)?;
         if !parser.finish() {
-            return Err(CommandError::Unconsumed);
+            return Err(CommandError::FoundUnconsumedData);
         }
-
         Ok(Self { key })
     }
 
@@ -54,7 +52,7 @@ impl Get {
         // Get the key's value
         let result = tokio::task::spawn_blocking(move || storage.get(self.key.as_bytes()))
             .await?
-            .map_err(|e| CommandError::EngineError(e.into()))?;
+            .map_err(|e| CommandError::KeyValueStoreFailed(e.into()))?;
 
         // Responding with the received value
         let response = match result {
