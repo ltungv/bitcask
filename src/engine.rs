@@ -4,11 +4,11 @@ mod bitcask;
 mod dashmapkv;
 mod sledkv;
 
+use std::str::FromStr;
+
 pub use bitcask::{BitCaskConfig, BitCaskKeyValueStore};
 pub use dashmapkv::DashMapKeyValueStore;
 pub use sledkv::SledKeyValueStore;
-
-use std::str::FromStr;
 
 /// A basic interface for a thread-safe key-value store that ensure consistent access to shared
 /// data from multiple different threads.

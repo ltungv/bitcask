@@ -1,9 +1,10 @@
+use tracing::debug;
+
 use super::{CommandError, CommandParser};
 use crate::{
     engine::KeyValueStore,
-    net::{Connection, Frame},
+    net::{connection::Connection, frame::Frame},
 };
-use tracing::debug;
 
 /// Arguments for DEL command
 #[derive(Debug)]

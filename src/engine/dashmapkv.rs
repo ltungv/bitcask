@@ -1,7 +1,9 @@
-use super::KeyValueStore;
-use dashmap::DashMap;
 use std::sync::Arc;
+
+use dashmap::DashMap;
 use thiserror::Error;
+
+use super::KeyValueStore;
 
 /// A type alias for a our database type
 #[derive(Default)]

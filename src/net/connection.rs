@@ -1,11 +1,13 @@
-use super::{frame::FrameError, Frame};
-use bytes::{Buf, BytesMut};
 use std::io::{self, Cursor, Write};
+
+use bytes::{Buf, BytesMut};
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     net::TcpStream,
 };
+
+use super::frame::{Frame, FrameError};
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {

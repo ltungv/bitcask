@@ -1,12 +1,14 @@
+use std::{env, fs, net::IpAddr, path};
+
+use structopt::StructOpt;
+use tokio::net::TcpListener;
+use tokio::signal;
+
 use opal::{
     engine::{self, BitCaskConfig, BitCaskKeyValueStore, DashMapKeyValueStore, SledKeyValueStore},
     net::Server,
     telemetry::{get_subscriber, init_subscriber},
 };
-use std::{env, fs, net::IpAddr, path};
-use structopt::StructOpt;
-use tokio::net::TcpListener;
-use tokio::signal;
 
 #[tokio::main]
 pub async fn main() -> Result<(), anyhow::Error> {

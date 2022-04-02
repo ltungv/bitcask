@@ -1,9 +1,10 @@
 //! Data structures and functions for parsing and representing values from RESP as
 //! message frame a network environment
 
-use super::cmd::{Del, Get, Set};
 use bytes::{Buf, Bytes};
 use thiserror::Error;
+
+use super::cmd::{Del, Get, Set};
 
 const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
 
@@ -24,7 +25,7 @@ pub enum FrameError {
     #[error("invalid integer string (got {0:?})")]
     NotInteger(Vec<u8>),
 
-    #[error("invalid utf8 string (got {0:?})")]
+    #[error(transparent)]
     NotUtf8(#[from] std::string::FromUtf8Error),
 }
 

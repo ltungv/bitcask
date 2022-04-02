@@ -1,10 +1,11 @@
+use bytes::Bytes;
+use tracing::debug;
+
 use super::{CommandError, CommandParser};
 use crate::{
     engine::KeyValueStore,
-    net::{Connection, Frame},
+    net::{connection::Connection, frame::Frame},
 };
-use bytes::Bytes;
-use tracing::debug;
 
 /// Arguments for for GET command
 #[derive(Debug)]

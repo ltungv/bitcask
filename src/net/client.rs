@@ -1,13 +1,15 @@
 use std::io;
 
-use super::{
-    cmd::{Del, Get, Set},
-    Connection, ConnectionError, Frame,
-};
 use bytes::Bytes;
 use thiserror::Error;
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::debug;
+
+use super::{
+    cmd::{Del, Get, Set},
+    connection::{Connection, ConnectionError},
+    frame::Frame,
+};
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -30,7 +32,7 @@ pub enum ClientError {
     Connection(#[from] ConnectionError),
 }
 
-/// Provide methods and hold states for manging a connection to a Redis server.
+/// Provide methods and hold states for managing a connection to a Redis server.
 ///
 /// A connection can be established using the [`connect`] function. Once a connection is
 /// established, requests to the server can be send using the corresponding methods of `Client`.
