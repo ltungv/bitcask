@@ -1,11 +1,6 @@
 use std::{collections::BTreeMap, io, path::Path};
 
-use thiserror::Error;
-
-use super::{
-    datafile::{DataFileEntry, DataFileReader},
-    utils,
-};
+use super::{datafile::DataFileReader, utils};
 
 #[derive(Debug, Default)]
 pub struct DataDir(BTreeMap<u64, DataFileReader>);

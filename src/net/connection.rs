@@ -11,10 +11,10 @@ use super::frame::{Frame, FrameError};
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {
-    #[error(transparent)]
+    #[error("Frame error - {0}")]
     Frame(#[from] FrameError),
 
-    #[error(transparent)]
+    #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 }
 

@@ -1,17 +1,12 @@
 //! Implementations for a small set of commands as supported by Redis
 
-mod del;
-mod get;
-mod set;
+pub mod parser;
 
 use std::convert::TryFrom;
 
 use bytes::Bytes;
 use thiserror::Error;
-
-pub use del::Del;
-pub use get::Get;
-pub use set::Set;
+use tracing::debug;
 
 use super::{
     connection::{Connection, ConnectionError},
@@ -19,38 +14,18 @@ use super::{
     shutdown::Shutdown,
 };
 use crate::engine::KeyValueStore;
+use parser::{CommandParseError, CommandParser};
 
 #[derive(Error, Debug)]
-pub enum CommandError {
-    #[error("key not given")]
-    NoKey,
-
-    #[error("value not given")]
-    NoValue,
-
-    #[error("found unconsumed data")]
-    FoundUnconsumedData,
-
-    #[error("invalid frame (got {0:?})")]
-    BadFrame(Frame),
-
-    #[error("invalid command (got {0:?})")]
-    BadCommand(Vec<u8>),
-
-    #[error("invalid integer string (got {0:?})")]
-    NotInteger(Vec<u8>),
-
-    #[error(transparent)]
-    NotUtf8(#[from] std::string::FromUtf8Error),
-
-    #[error(transparent)]
+pub enum CommandApplyError {
+    #[error("Join error - {0}")]
     TaskJoin(#[from] tokio::task::JoinError),
 
-    #[error(transparent)]
+    #[error("Connection error - {0}")]
     Connection(#[from] ConnectionError),
 
-    #[error("engine failed - {0}")]
-    KeyValueStoreFailed(#[source] anyhow::Error),
+    #[error("Engine failed - {0}")]
+    KeyValueStore(#[source] anyhow::Error),
 }
 
 /// Enumeration of all the supported Redis commands. Each commands
@@ -76,7 +51,7 @@ impl Command {
         storage: KV,
         connection: &mut Connection,
         _shutdown: &mut Shutdown,
-    ) -> Result<(), CommandError>
+    ) -> Result<(), CommandApplyError>
     where
         KV: KeyValueStore,
     {
@@ -89,83 +64,177 @@ impl Command {
 }
 
 impl TryFrom<Frame> for Command {
-    type Error = CommandError;
+    type Error = CommandParseError;
 
     fn try_from(frame: Frame) -> Result<Self, Self::Error> {
-        let mut parser = CommandParser::new(frame)?;
-        match parser.get_bytes()? {
-            Some(b) if "DEL" == b => Ok(Command::Del(Del::parse(parser)?)),
-            Some(b) if "GET" == b => Ok(Command::Get(Get::parse(parser)?)),
-            Some(b) if "SET" == b => Ok(Command::Set(Set::parse(parser)?)),
-            Some(b) => Err(CommandError::BadCommand(b.to_vec())),
-            None => Err(CommandError::BadCommand(vec![])),
-        }
+        CommandParser::parse(frame)
     }
 }
 
-/// A parser that extracts values contained within a command frame
+/// Arguments for DEL command
 #[derive(Debug)]
-pub struct CommandParser {
-    frames: std::vec::IntoIter<Frame>,
+pub struct Del {
+    keys: Vec<String>,
 }
 
-impl CommandParser {
-    /// Creates a new parser from the given command frame.
+impl Del {
+    /// Creates a new set of arguments.
     ///
-    /// Returns the parser if the frame is of [`Frame::Array`] variant,
-    /// Otherwise, returns `None`
-    ///
-    /// [`Frame::Array`]: super::Frame::Array
-    pub fn new(frame: Frame) -> Result<Self, CommandError> {
-        match frame {
-            Frame::Array(frames) => Ok(Self {
-                frames: frames.into_iter(),
-            }),
-            _ => Err(CommandError::BadFrame(frame)),
+    /// DEL requires that the list of keys must have at least 1 element
+    pub fn new<S>(keys: &[S]) -> Self
+    where
+        S: ToString,
+    {
+        Self {
+            keys: keys.iter().map(|k| k.to_string()).collect(),
         }
     }
 
-    /// Parses the next value in the frame as an UTF8 string.
+    /// Get the assigned keys
+    pub fn keys(&self) -> std::slice::Iter<'_, String> {
+        self.keys.iter()
+    }
+
+    /// Apply the command to the specified [`StorageEngine`] instance.
     ///
-    /// Returns a string if the next value can be represented as string.
-    /// Otherwise returns an error. Returns `None` if there's no value left.
-    pub fn get_string(&mut self) -> Result<Option<String>, CommandError> {
-        match self.frames.next() {
-            Some(Frame::BulkString(s)) => Ok(Some(String::from_utf8(Vec::from(&s[..]))?)),
-            Some(f) => Err(CommandError::BadFrame(f)),
-            None => Ok(None),
+    /// [`StorageEngine`]: crate::StorageEngine;
+    #[tracing::instrument(skip(self, storage, connection))]
+    pub async fn apply<KV>(
+        self,
+        storage: KV,
+        connection: &mut Connection,
+    ) -> Result<(), CommandApplyError>
+    where
+        KV: KeyValueStore,
+    {
+        // Delete the keys and count the number of deletions
+        let count = tokio::task::spawn_blocking(move || {
+            let mut count = 0;
+            for key in &self.keys {
+                match storage.del(key.as_bytes()) {
+                    Ok(Some(_)) => count += 1,
+                    Ok(None) => continue,
+                    Err(e) => return Err(e),
+                };
+            }
+            Ok(count)
+        })
+        .await?
+        .map_err(|e: KV::Error| CommandApplyError::KeyValueStore(e.into()))?;
+
+        // Responding with the number of deletions
+        let response = Frame::Integer(count);
+        debug!(?response);
+
+        // Write the response to the client
+        connection.write_frame(&response).await?;
+        Ok(())
+    }
+}
+
+/// Arguments for for GET command
+#[derive(Debug)]
+pub struct Get {
+    key: String,
+}
+
+impl Get {
+    /// Creates a new set of arguments
+    pub fn new<S>(key: S) -> Self
+    where
+        S: ToString,
+    {
+        Self {
+            key: key.to_string(),
         }
     }
 
-    /// Parses the next value in the frame as a bytes sequence.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Apply the command to the specified [`StorageEngine`] instance.
     ///
-    /// Returns a string if the next value can be represented as a bytes sequence.
-    /// Otherwise returns an error. Returns `None` if there's no value left.
-    pub fn get_bytes(&mut self) -> Result<Option<Bytes>, CommandError> {
-        match self.frames.next() {
-            Some(Frame::BulkString(s)) => Ok(Some(s)),
-            Some(f) => Err(CommandError::BadFrame(f)),
-            None => Ok(None),
+    /// [`StorageEngine`]: crate::StorageEngine;
+    #[tracing::instrument(skip(self, storage, connection))]
+    pub async fn apply<KV>(
+        self,
+        storage: KV,
+        connection: &mut Connection,
+    ) -> Result<(), CommandApplyError>
+    where
+        KV: KeyValueStore,
+    {
+        // Get the key's value
+        let result = tokio::task::spawn_blocking(move || storage.get(self.key.as_bytes()))
+            .await?
+            .map_err(|e| CommandApplyError::KeyValueStore(e.into()))?;
+
+        // Responding with the received value
+        let response = match result {
+            Some(val) => Frame::BulkString(Bytes::from(val)),
+            None => Frame::Null,
+        };
+        debug!(?response);
+
+        // Write the response to the client
+        connection.write_frame(&response).await?;
+        Ok(())
+    }
+}
+
+/// Arguments for SET command
+#[derive(Debug)]
+pub struct Set {
+    /// The key to set a value to
+    key: String,
+    /// The value to be set
+    value: Bytes,
+}
+
+impl Set {
+    /// Creates a new set of arguments
+    pub fn new<S>(key: S, value: Bytes) -> Self
+    where
+        S: ToString,
+    {
+        Self {
+            key: key.to_string(),
+            value,
         }
     }
 
-    /// Parses the next value in the frame as an 64-bit integer
-    ///
-    /// Returns an `i64` if the next value can be represented as an as an
-    /// 64-bit integer.  Otherwise returns an error. Returns `None` if
-    /// there's no value left.
-    pub fn get_integer(&mut self) -> Result<Option<i64>, CommandError> {
-        match self.frames.next() {
-            Some(Frame::BulkString(s)) => Ok(Some(
-                atoi::atoi(&s[..]).ok_or_else(|| CommandError::NotInteger(s.to_vec()))?,
-            )),
-            Some(f) => Err(CommandError::BadFrame(f)),
-            None => Ok(None),
-        }
+    pub fn key(&self) -> &str {
+        &self.key
     }
 
-    /// Ensure there are no more values
-    pub fn finish(&mut self) -> bool {
-        self.frames.next().is_none()
+    pub fn value(&self) -> &[u8] {
+        &self.value
+    }
+
+    /// Apply the command to the specified [`StorageEngine`] instance.
+    ///
+    /// [`StorageEngine`]: crate::StorageEngine;
+    #[tracing::instrument(skip(self, storage, connection))]
+    pub async fn apply<KV>(
+        self,
+        storage: KV,
+        connection: &mut Connection,
+    ) -> Result<(), CommandApplyError>
+    where
+        KV: KeyValueStore,
+    {
+        // Set the key's value
+        tokio::task::spawn_blocking(move || storage.set(self.key.as_bytes(), &self.value))
+            .await?
+            .map_err(|e| CommandApplyError::KeyValueStore(e.into()))?;
+
+        // Responding OK
+        let response = Frame::SimpleString("OK".to_string());
+        debug!(?response);
+
+        // Write the response to the client
+        connection.write_frame(&response).await?;
+        Ok(())
     }
 }

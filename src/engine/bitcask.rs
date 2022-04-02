@@ -20,6 +20,7 @@ use std::{
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use thiserror::Error;
+use tracing::debug;
 
 use super::KeyValueStore;
 use datadir::DataDir;
@@ -52,13 +53,13 @@ impl KeyValueStore for BitCaskKeyValueStore {
 /// Error returned by this module
 #[derive(Error, Debug)]
 pub enum BitCaskError {
-    #[error("entry `{0:?}` is invalid")]
+    #[error("Entry `{0:?}` is invalid")]
     BadKeyDirEntry(KeyDirEntry),
 
-    #[error(transparent)]
+    #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
-    #[error(transparent)]
+    #[error("Serialization error - {0}")]
     Serialization(#[from] bincode::Error),
 }
 
@@ -110,6 +111,8 @@ impl BitCask {
         P: AsRef<Path>,
     {
         let (keydir, active_fileid, garbage) = rebuild_keydir(&path)?;
+        debug!(?active_fileid, "Got new activate file ID");
+
         let ctx = Arc::new(BitCaskContext {
             path: path.as_ref().to_path_buf(),
             min_fileid: atomic::AtomicU64::new(0),
@@ -352,8 +355,7 @@ impl BitCaskReader {
 
                 let keydir_entry = index.value();
                 let datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
+                    readers
                         .get(&self.ctx.path, keydir_entry.fileid)?
                         .entry(keydir_entry.len, keydir_entry.pos)?
                 };

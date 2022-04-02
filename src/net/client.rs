@@ -13,22 +13,19 @@ use super::{
 
 #[derive(Error, Debug)]
 pub enum ClientError {
-    #[error("connection reset by peer")]
+    #[error("Connection reset by peer")]
     ConnectionReset,
 
-    #[error("error from server `{0}`")]
+    #[error("Error from server `{0}`")]
     ServerFailed(String),
 
-    #[error("unexpected frame (got {0:?})")]
+    #[error("Unexpected frame (got {0:?})")]
     BadResponse(Frame),
 
-    #[error("bad arguments - {0}")]
-    BadArguments(&'static str),
-
-    #[error(transparent)]
+    #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
-    #[error(transparent)]
+    #[error("Connection error - {0}")]
     Connection(#[from] ConnectionError),
 }
 
@@ -108,10 +105,6 @@ impl Client {
     /// Returns the number of keys that were removed.
     #[tracing::instrument(skip(self))]
     pub async fn del(&mut self, keys: &[String]) -> Result<i64, ClientError> {
-        if keys.is_empty() {
-            return Err(ClientError::BadArguments("expecting at least 1 key"));
-        }
-
         // already checked for non-empty slice with the if-condition
         let cmd = Del::new(keys);
 

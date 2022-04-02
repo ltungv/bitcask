@@ -10,22 +10,22 @@ const MAX_BULK_STRING_LENGTH: i64 = 512 * (1 << 20); // 512MB
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum FrameError {
-    #[error("incomplete frame")]
+    #[error("Incomplete frame")]
     Incomplete,
 
-    #[error("invalid starting byte (got {0})")]
+    #[error("Invalid starting byte (got {0})")]
     BadFrameStart(u8),
 
-    #[error("invalid ending bytes (got {0} and {1})")]
+    #[error("Invalid ending bytes (got {0} and {1})")]
     BadFrameEnd(u8, u8),
 
-    #[error("invalid length (got {0})")]
+    #[error("Invalid length (got {0})")]
     BadLength(i64),
 
-    #[error("invalid integer string (got {0:?})")]
+    #[error("Invalid integer string (got {0:?})")]
     NotInteger(Vec<u8>),
 
-    #[error(transparent)]
+    #[error("Invalid UTF-8 string - {0}")]
     NotUtf8(#[from] std::string::FromUtf8Error),
 }
 
@@ -114,7 +114,7 @@ impl From<Del> for Frame {
     fn from(cmd: Del) -> Self {
         let mut cmd_data = vec![Self::BulkString("DEL".into())];
         for key in cmd.keys() {
-            cmd_data.push(Self::BulkString(key.to_owned().into()));
+            cmd_data.push(Self::BulkString(Bytes::copy_from_slice(key.as_bytes())));
         }
         Self::Array(cmd_data)
     }
@@ -124,19 +124,17 @@ impl From<Get> for Frame {
     fn from(cmd: Get) -> Self {
         Self::Array(vec![
             Self::BulkString("GET".into()),
-            Self::BulkString(cmd.key().to_owned().into()),
+            Self::BulkString(Bytes::copy_from_slice(cmd.key().as_bytes())),
         ])
     }
 }
 
 impl From<Set> for Frame {
     fn from(cmd: Set) -> Self {
-        let key = cmd.key().to_string();
-        let val = cmd.value();
         Self::Array(vec![
             Self::BulkString("SET".into()),
-            Self::BulkString(key.into()),
-            Self::BulkString(val),
+            Self::BulkString(Bytes::copy_from_slice(cmd.key().as_bytes())),
+            Self::BulkString(Bytes::copy_from_slice(cmd.value())),
         ])
     }
 }

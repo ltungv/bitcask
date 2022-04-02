@@ -11,7 +11,7 @@ use tokio::{
 use tracing::{debug, error, info};
 
 use super::{
-    cmd::{Command, CommandError},
+    cmd::{parser::CommandParseError, Command, CommandApplyError},
     connection::{Connection, ConnectionError},
     shutdown::Shutdown,
 };
@@ -26,14 +26,17 @@ const MAX_BACKOFF: u64 = 64;
 
 #[derive(Error, Debug)]
 pub enum ServerError {
-    #[error(transparent)]
+    #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
-    #[error(transparent)]
+    #[error("Connection error - {0}")]
     Connection(#[from] ConnectionError),
 
-    #[error(transparent)]
-    Command(#[from] CommandError),
+    #[error("Command apply error - {0}")]
+    CommandApply(#[from] CommandApplyError),
+
+    #[error("Command parse error - {0}")]
+    CommandParse(#[from] CommandParseError),
 }
 
 /// Provide methods and hold states for a Redis server. The server will exist when `shutdown`
