@@ -1,4 +1,7 @@
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::{
+    fs,
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+};
 
 /// A wrapper a round `BufReader` that keeps track of the last read position.
 #[derive(Debug)]
@@ -102,5 +105,11 @@ where
             self.pos = posn;
             posn
         })
+    }
+}
+
+impl BufWriterWithPos<fs::File> {
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        self.writer.get_ref().sync_all()
     }
 }

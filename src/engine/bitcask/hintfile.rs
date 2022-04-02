@@ -1,123 +1,86 @@
 use std::{
     fs,
-    io::{self, Read, Seek, Write},
+    io::{self, BufReader, BufWriter, Write},
     path::Path,
 };
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum HintFileError {
-    #[error(transparent)]
-    Io(#[from] io::Error),
-
-    #[error("serialization error")]
-    Serialization(#[from] bincode::Error),
-}
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct HintFileEntry {
-    pub(crate) tstamp: u128,
-    pub(crate) len: u64,
-    pub(crate) pos: u64,
-    pub(crate) key: Vec<u8>,
+pub struct HintFileEntry {
+    pub tstamp: u128,
+    pub len: u64,
+    pub pos: u64,
+    pub key: Vec<u8>,
 }
 
+/// An iterator over all entries in a hint file.
 #[derive(Debug)]
-pub(crate) struct HintFileIterator(fs::File);
+pub struct HintFileIterator(BufReader<fs::File>);
 
 impl HintFileIterator {
-    pub(crate) fn open<P>(path: P) -> Result<Self, HintFileError>
+    /// Create a new iterator over the hint file at the given `path`.
+    pub fn open<P>(path: P) -> io::Result<Self>
     where
         P: AsRef<Path>,
     {
         let file = fs::OpenOptions::new().read(true).open(path)?;
-        Ok(file.into())
+        let buf_reader = BufReader::new(file);
+        Ok(Self(buf_reader))
     }
-}
 
-impl Read for HintFileIterator {
-    fn read(&mut self, b: &mut [u8]) -> std::result::Result<usize, io::Error> {
-        self.0.read(b)
-    }
-}
-
-impl From<fs::File> for HintFileIterator {
-    fn from(file: fs::File) -> Self {
-        Self(file)
-    }
-}
-
-impl Iterator for HintFileIterator {
-    type Item = Result<HintFileEntry, HintFileError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Return a next entry in the hint file.
+    pub fn entry(&mut self) -> bincode::Result<Option<HintFileEntry>> {
         match bincode::deserialize_from(&mut self.0) {
-            Err(err) => match err.as_ref() {
-                bincode::ErrorKind::Io(io_err) => match io_err.kind() {
-                    // TODO: Note down why this is ok
-                    io::ErrorKind::UnexpectedEof => None,
-                    _ => Some(Err(HintFileError::from(err))),
+            Ok(entry) => Ok(Some(entry)),
+            Err(e) => match e.as_ref() {
+                bincode::ErrorKind::Io(ioe) => match ioe.kind() {
+                    io::ErrorKind::UnexpectedEof => Ok(None), // stop iterating when EOF
+                    _ => Err(e),
                 },
-                _ => Some(Err(HintFileError::from(err))),
+                _ => Err(e),
             },
-            Ok(entry) => Some(Ok(entry)),
         }
     }
 }
 
+/// An append-only writer for writing entries to the given hint file.
 #[derive(Debug)]
-pub(crate) struct HintFileWriter(fs::File);
+pub struct HintFileWriter(BufWriter<fs::File>);
 
 impl HintFileWriter {
-    pub(crate) fn create<P>(path: P) -> Result<Self, HintFileError>
+    pub fn create<P>(path: P) -> io::Result<Self>
     where
         P: AsRef<Path>,
     {
         let file = fs::OpenOptions::new()
-            .read(false)
             .append(true)
             .create_new(true)
             .open(path)?;
-        let writer = file.try_into()?;
-        Ok(writer)
+        let writer = BufWriter::new(file);
+        Ok(HintFileWriter(writer))
     }
 
-    pub(crate) fn append(
-        &mut self,
-        tstamp: u128,
-        len: u64,
-        pos: u64,
-        key: &[u8],
-    ) -> Result<(), HintFileError> {
+    pub fn append(&mut self, tstamp: u128, len: u64, pos: u64, key: &[u8]) -> bincode::Result<()> {
         let entry = HintFileEntry {
             tstamp,
             len,
             pos,
             key: key.to_vec(),
         };
-        bincode::serialize_into(&mut *self, &entry)?;
+        bincode::serialize_into(&mut self.0, &entry)
+    }
+
+    /// Write all buffered bytes to the underlying I/O device
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()?;
         Ok(())
     }
-}
 
-impl Write for HintFileWriter {
-    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        self.0.write(b)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
-    }
-}
-
-impl TryFrom<fs::File> for HintFileWriter {
-    type Error = io::Error;
-
-    fn try_from(mut file: fs::File) -> io::Result<Self> {
-        file.seek(io::SeekFrom::End(0))?;
-        Ok(HintFileWriter(file))
+    /// Synchronize the writer state with the file system and ensure all data is physically written.
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        self.0.get_ref().sync_all()?;
+        Ok(())
     }
 }
 
@@ -129,40 +92,48 @@ mod tests {
 
     quickcheck! {
         fn writer_works(tstamp: u128, len: u64, pos: u64, key: Vec<u8>) -> bool {
-            // setup writer
-            let datafile = tempfile::Builder::new().append(true).tempfile().unwrap().into_file();
-            let mut writer = HintFileWriter::try_from(datafile).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let fpath = dir.as_ref().join("test");
 
             // write the entry
+            let mut writer = HintFileWriter::create(fpath).unwrap();
             writer.append(tstamp, len, pos, &key).unwrap();
             writer.flush().unwrap();
 
+            // succeed if there's no error
             true
         }
     }
 
     quickcheck! {
         fn iterator_iterates_entries_written_by_writer(entries: Vec<(u128, u64, u64, Vec<u8>)>) -> bool {
-            // setup reader and writer
-            let datafile = tempfile::Builder::new().append(true).tempfile().unwrap();
-            let iter = HintFileIterator::open(datafile.path()).unwrap();
-            let mut writer = HintFileWriter::try_from(datafile.into_file()).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let fpath = dir.as_ref().join("test");
 
             // write the entry
+            let mut writer = HintFileWriter::create(&fpath).unwrap();
             for (tstamp, len, pos, key) in entries.iter() {
                 writer.append(*tstamp, *len, *pos, key).unwrap();
             }
             writer.flush().unwrap();
 
             // read the entry
+            let mut iter = HintFileIterator::open(&fpath).unwrap();
             let mut valid = true;
-            for ((tstamp, len, pos, key), parse_result) in entries.iter().zip(iter) {
-                let entry = parse_result.unwrap();
-                valid &= entry.tstamp == *tstamp &&
-                    entry.len == *len &&
-                    entry.pos == *pos &&
-                    entry.key == *key;
+            for (tstamp, len, pos, key) in entries.iter() {
+                let entry = iter.entry().unwrap();
+                match entry {
+                    None => return false,
+                    Some(e) => {
+                        valid &= e.tstamp == *tstamp &&
+                            e.len == *len &&
+                            e.pos == *pos &&
+                            e.key == *key;
+                    }
+                }
             }
+
+            // succeed if we can iterate over all written data
             valid
         }
     }

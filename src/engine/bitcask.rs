@@ -5,17 +5,16 @@
 //! [`engine::LogStructuredHashTable`]: opal::engine::LogStructuredHashTable
 
 pub(crate) mod bufio;
+pub(crate) mod datadir;
 pub(crate) mod datafile;
 pub(crate) mod hintfile;
+pub(crate) mod utils;
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
     fs, io,
     path::{self, Path},
     sync::{atomic, Arc, Mutex},
-    time,
 };
 
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
@@ -23,14 +22,9 @@ use dashmap::DashMap;
 use thiserror::Error;
 
 use super::KeyValueStore;
-use datafile::{
-    DataFileEntryValue, DataFileError, DataFileIterator, DataFileReader, DataFileWriter,
-};
-use hintfile::{HintFileError, HintFileIterator, HintFileWriter};
-
-const DATAFILE_EXT: &str = "bitcask.data";
-
-const HINTFILE_EXT: &str = "bitcask.hint";
+use datadir::DataDir;
+use datafile::{DataFileEntryValue, DataFileIterator, DataFileWriter};
+use hintfile::{HintFileIterator, HintFileWriter};
 
 /// Merge log files when then number of unused bytes across all files exceeds this limit.
 const GARBAGE_THRESHOLD: u64 = 4 * 1024 * 1024; // 4MB
@@ -62,13 +56,10 @@ pub enum BitCaskError {
     BadKeyDirEntry(KeyDirEntry),
 
     #[error(transparent)]
-    DataFile(#[from] DataFileError),
-
-    #[error(transparent)]
-    HintFile(#[from] HintFileError),
-
-    #[error(transparent)]
     Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Serialization(#[from] bincode::Error),
 }
 
 /// Configuration for a `BitCask` instance.
@@ -78,6 +69,7 @@ pub struct BitCaskConfig {
 }
 
 impl BitCaskConfig {
+    /// Create a `BitCask` instance at the given path with the available options.
     pub fn open<P>(&self, path: P) -> Result<BitCask, BitCaskError>
     where
         P: AsRef<Path>,
@@ -85,6 +77,7 @@ impl BitCaskConfig {
         BitCask::open(path, self)
     }
 
+    /// Set the max number of concurrent readers.
     pub fn concurrency(&mut self, concurrency: usize) -> &mut Self {
         self.concurrency = concurrency;
         self
@@ -128,15 +121,16 @@ impl BitCask {
             readers
                 .push(BitCaskReader {
                     ctx: Arc::clone(&ctx),
-                    readers: RefCell::new(ReaderMap::new()),
+                    readers: RefCell::new(DataDir::default()),
                 })
                 .expect("unreachable error");
         }
 
-        let writer = DataFileWriter::create(path.as_ref().join(datafile_name(active_fileid)))?;
+        let writer =
+            DataFileWriter::create(path.as_ref().join(utils::datafile_name(active_fileid)))?;
         let writer = Arc::new(Mutex::new(BitCaskWriter {
             ctx,
-            readers: RefCell::new(ReaderMap::new()),
+            readers: RefCell::new(DataDir::default()),
             writer,
             active_fileid,
             garbage,
@@ -168,8 +162,12 @@ impl BitCask {
         self.writer.lock().unwrap().delete(key)
     }
 
-    fn sync(&self) -> Result<(), BitCaskError> {
-        self.writer.lock().unwrap().sync()
+    fn merge(&self) -> Result<(), BitCaskError> {
+        self.writer.lock().unwrap().merge()
+    }
+
+    fn sync_all(&self) -> Result<(), BitCaskError> {
+        self.writer.lock().unwrap().sync_all()
     }
 }
 
@@ -184,39 +182,6 @@ pub struct KeyDirEntry {
 }
 
 #[derive(Debug)]
-struct ReaderMap(BTreeMap<u64, DataFileReader>);
-
-impl ReaderMap {
-    fn new() -> Self {
-        Self(BTreeMap::new())
-    }
-
-    fn get<P>(&mut self, path: P, fileid: u64) -> Result<&DataFileReader, BitCaskError>
-    where
-        P: AsRef<Path>,
-    {
-        let reader = self.0.entry(fileid).or_insert(DataFileReader::open(
-            path.as_ref().join(datafile_name(fileid)),
-        )?);
-        Ok(reader)
-    }
-
-    fn stale_fileids(&self, min_fileid: u64) -> Vec<u64> {
-        self.0
-            .keys()
-            .filter(|&&id| id < min_fileid)
-            .cloned()
-            .collect()
-    }
-
-    fn drop_stale(&mut self, min_fileid: u64) {
-        self.stale_fileids(min_fileid).iter().for_each(|id| {
-            self.0.remove(id);
-        });
-    }
-}
-
-#[derive(Debug)]
 struct BitCaskContext {
     path: path::PathBuf,
     min_fileid: atomic::AtomicU64,
@@ -226,7 +191,7 @@ struct BitCaskContext {
 #[derive(Debug)]
 struct BitCaskWriter {
     ctx: Arc<BitCaskContext>,
-    readers: RefCell<ReaderMap>,
+    readers: RefCell<DataDir>,
     writer: DataFileWriter,
     active_fileid: u64,
     garbage: u64,
@@ -239,8 +204,9 @@ impl BitCaskWriter {
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
-        let tstamp = timestamp();
+        let tstamp = utils::timestamp();
         let index = self.writer.data(tstamp, key, value)?;
+        self.writer.flush()?;
 
         let keydir_entry = KeyDirEntry {
             fileid: self.active_fileid,
@@ -250,16 +216,19 @@ impl BitCaskWriter {
         };
 
         match self.ctx.keydir.insert(key.to_vec(), keydir_entry) {
-            Some(prev_index) => {
-                let prev_datafile_entry = {
-                    let readers = self.readers.get_mut();
-                    let reader = readers.get(&self.ctx.path, prev_index.fileid)?;
-                    unsafe { reader.entry(prev_index.len, prev_index.pos)? }
+            Some(prev_keydir_entry) => {
+                let prev_datafile_entry = unsafe {
+                    self.readers
+                        .borrow_mut()
+                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
+                        .entry(prev_keydir_entry.len, prev_keydir_entry.pos)?
                 };
-                self.gc(prev_index.len)?;
+                self.gc(prev_keydir_entry.len)?;
                 match prev_datafile_entry.value {
                     DataFileEntryValue::Data(v) => Ok(Some(v)),
-                    DataFileEntryValue::Tombstone => Err(BitCaskError::BadKeyDirEntry(prev_index)),
+                    DataFileEntryValue::Tombstone => {
+                        Err(BitCaskError::BadKeyDirEntry(prev_keydir_entry))
+                    }
                 }
             }
             None => Ok(None),
@@ -274,44 +243,35 @@ impl BitCaskWriter {
     /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         match self.ctx.keydir.remove(key) {
-            Some((_, prev_index)) => {
-                let prev_datafile_entry = {
-                    let readers = self.readers.get_mut();
-                    let reader = readers.get(&self.ctx.path, prev_index.fileid)?;
-                    unsafe { reader.entry(prev_index.len, prev_index.pos)? }
+            Some((_, prev_keydir_entry)) => {
+                let prev_datafile_entry = unsafe {
+                    self.readers
+                        .borrow_mut()
+                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
+                        .entry(prev_keydir_entry.len, prev_keydir_entry.pos)?
                 };
                 // Write a tombstone value
-                self.writer.tombstone(timestamp(), key)?;
+                self.writer.tombstone(utils::timestamp(), key)?;
+                self.writer.flush()?;
                 // Accumulated unused bytes count when we delete the given key
-                self.gc(prev_index.len)?;
+                self.gc(prev_keydir_entry.len)?;
                 match prev_datafile_entry.value {
                     DataFileEntryValue::Data(v) => Ok(Some(v)),
-                    DataFileEntryValue::Tombstone => Err(BitCaskError::BadKeyDirEntry(prev_index)),
+                    DataFileEntryValue::Tombstone => {
+                        Err(BitCaskError::BadKeyDirEntry(prev_keydir_entry))
+                    }
                 }
             }
             None => Ok(None),
         }
     }
 
-    fn sync(&mut self) -> Result<(), BitCaskError> {
-        self.writer.sync()?;
-        Ok(())
-    }
-
-    fn gc(&mut self, sz: u64) -> Result<(), BitCaskError> {
-        self.garbage += sz;
-        if self.garbage > GARBAGE_THRESHOLD {
-            self.merge()?;
-        }
-        Ok(())
-    }
-
     fn merge(&mut self) -> Result<(), BitCaskError> {
         let merge_fileid = self.active_fileid + 1;
         let mut merge_datafile_writer =
-            DataFileWriter::create(self.ctx.path.join(datafile_name(merge_fileid)))?;
+            DataFileWriter::create(self.ctx.path.join(utils::datafile_name(merge_fileid)))?;
         let mut merge_hintfile_writer =
-            HintFileWriter::create(self.ctx.path.join(hintfile_name(merge_fileid)))?;
+            HintFileWriter::create(self.ctx.path.join(utils::hintfile_name(merge_fileid)))?;
 
         let mut readers = self.readers.borrow_mut();
         for mut keydir_entry in self.ctx.keydir.iter_mut() {
@@ -336,23 +296,41 @@ impl BitCaskWriter {
             )?;
         }
 
+        merge_datafile_writer.flush()?;
+        merge_hintfile_writer.flush()?;
+
         let stale_fileids = readers.stale_fileids(merge_fileid);
         readers.drop_stale(merge_fileid);
 
         for id in stale_fileids {
-            let hintfile_path = self.ctx.path.join(hintfile_name(id));
+            let hintfile_path = self.ctx.path.join(utils::hintfile_name(id));
+            let datafile_path = self.ctx.path.join(utils::datafile_name(id));
+
             if hintfile_path.exists() {
                 fs::remove_file(hintfile_path)?;
             }
-
-            let datafile_path = self.ctx.path.join(hintfile_name(id));
-            fs::remove_file(datafile_path)?;
+            if datafile_path.exists() {
+                fs::remove_file(datafile_path)?;
+            }
         }
 
         self.garbage = 0;
         self.active_fileid += 2;
         self.writer =
-            DataFileWriter::create(self.ctx.path.join(datafile_name(self.active_fileid)))?;
+            DataFileWriter::create(self.ctx.path.join(utils::datafile_name(self.active_fileid)))?;
+        Ok(())
+    }
+
+    fn gc(&mut self, sz: u64) -> Result<(), BitCaskError> {
+        self.garbage += sz;
+        if self.garbage > GARBAGE_THRESHOLD {
+            self.merge()?;
+        }
+        Ok(())
+    }
+
+    fn sync_all(&mut self) -> Result<(), BitCaskError> {
+        self.writer.sync_all()?;
         Ok(())
     }
 }
@@ -360,7 +338,7 @@ impl BitCaskWriter {
 #[derive(Debug)]
 struct BitCaskReader {
     ctx: Arc<BitCaskContext>,
-    readers: RefCell<ReaderMap>,
+    readers: RefCell<DataDir>,
 }
 
 impl BitCaskReader {
@@ -368,31 +346,26 @@ impl BitCaskReader {
         match self.ctx.keydir.get(key) {
             None => Ok(None),
             Some(index) => {
-                self.drop_stale_readers();
-                Ok(Some(self.get_by_index(index.value())?))
+                let min_fileid = self.ctx.min_fileid.load(atomic::Ordering::SeqCst);
+                let mut readers = self.readers.borrow_mut();
+                readers.drop_stale(min_fileid);
+
+                let keydir_entry = index.value();
+                let datafile_entry = unsafe {
+                    self.readers
+                        .borrow_mut()
+                        .get(&self.ctx.path, keydir_entry.fileid)?
+                        .entry(keydir_entry.len, keydir_entry.pos)?
+                };
+
+                match datafile_entry.value {
+                    DataFileEntryValue::Data(v) => Ok(Some(v)),
+                    DataFileEntryValue::Tombstone => {
+                        Err(BitCaskError::BadKeyDirEntry(keydir_entry.clone()))
+                    }
+                }
             }
         }
-    }
-
-    fn get_by_index(&self, keydir_entry: &KeyDirEntry) -> Result<Vec<u8>, BitCaskError> {
-        let datafile_entry = {
-            let mut readers = self.readers.borrow_mut();
-            let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
-            unsafe { reader.entry(keydir_entry.len, keydir_entry.pos)? }
-        };
-
-        match datafile_entry.value {
-            DataFileEntryValue::Data(v) => Ok(v),
-            DataFileEntryValue::Tombstone => {
-                Err(BitCaskError::BadKeyDirEntry(keydir_entry.clone()))
-            }
-        }
-    }
-
-    fn drop_stale_readers(&self) {
-        let min_fileid = self.ctx.min_fileid.load(atomic::Ordering::SeqCst);
-        let mut readers = self.readers.borrow_mut();
-        readers.drop_stale(min_fileid);
     }
 }
 
@@ -401,16 +374,16 @@ where
     P: AsRef<Path>,
 {
     let keydir = KeyDir::default();
-    let fileids = sorted_fileids(&path)?;
+    let fileids = utils::sorted_fileids(&path)?;
     let active_fileid = fileids.last().map(|id| id + 1).unwrap_or_default();
 
     let mut garbage = 0;
     for fileid in fileids {
-        let hintfile_path = path.as_ref().join(hintfile_name(fileid));
+        let hintfile_path = path.as_ref().join(utils::hintfile_name(fileid));
         if hintfile_path.exists() {
             populate_keydir_with_hintfile(&keydir, fileid, hintfile_path)?;
         } else {
-            let datafile_path = path.as_ref().join(datafile_name(fileid));
+            let datafile_path = path.as_ref().join(utils::datafile_name(fileid));
             garbage += populate_keydir_with_datafile(&keydir, fileid, datafile_path)?;
         }
     }
@@ -425,9 +398,8 @@ fn populate_keydir_with_hintfile<P>(
 where
     P: AsRef<Path>,
 {
-    let hintfile_iter = HintFileIterator::open(path)?;
-    for parse_result in hintfile_iter {
-        let entry = parse_result?;
+    let mut hintfile_iter = HintFileIterator::open(path)?;
+    while let Some(entry) = hintfile_iter.entry()? {
         keydir.insert(
             entry.key,
             KeyDirEntry {
@@ -472,42 +444,6 @@ where
     Ok(garbage)
 }
 
-fn datafile_name(fileid: u64) -> String {
-    format!("{}.{}", fileid, DATAFILE_EXT)
-}
-
-fn hintfile_name(fileid: u64) -> String {
-    format!("{}.{}", fileid, HINTFILE_EXT)
-}
-
-fn sorted_fileids<P>(path: P) -> Result<Vec<u64>, BitCaskError>
-where
-    P: AsRef<Path>,
-{
-    // read directory
-    let fileids: BTreeSet<u64> = fs::read_dir(&path)?
-        // ignore errors
-        .filter_map(std::result::Result::ok)
-        // extract paths
-        .map(|e| e.path())
-        // get files with data file extentions
-        .filter(|p| p.is_file() && p.extension() == Some(OsStr::new(DATAFILE_EXT)))
-        // parse the file id as u64
-        .filter_map(|p| p.file_stem().and_then(OsStr::to_str).map(str::parse::<u64>))
-        .filter_map(std::result::Result::ok)
-        .collect();
-
-    let fileids: Vec<u64> = fileids.into_iter().collect();
-    Ok(fileids)
-}
-
-fn timestamp() -> u128 {
-    time::SystemTime::now()
-        .duration_since(time::UNIX_EPOCH)
-        .expect("invalid system time")
-        .as_nanos()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,14 +456,14 @@ mod tests {
             // Create random datafiles and hintfiles in the directory
             let dir = tempfile::tempdir().unwrap();
             for fileid in 0..n.min(100) {
-                tmps.push(fs::File::create(dir.path().join(datafile_name(fileid))).unwrap());
+                tmps.push(fs::File::create(dir.path().join(utils::datafile_name(fileid))).unwrap());
                 if rand::random() {
-                    tmps.push(fs::File::create(dir.path().join(hintfile_name(fileid))).unwrap());
+                    tmps.push(fs::File::create(dir.path().join(utils::hintfile_name(fileid))).unwrap());
                 }
             }
 
             // check if ids are sorted
-            let fileids = sorted_fileids(dir).unwrap();
+            let fileids = utils::sorted_fileids(dir).unwrap();
             fileids.iter().enumerate().all(|(i, &v)| i as u64 == v)
         }
     }
