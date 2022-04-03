@@ -24,17 +24,22 @@ const MAX_CONNECTIONS: usize = 128;
 /// The value is in second.
 const MAX_BACKOFF: u64 = 64;
 
+/// Error from the server.
 #[derive(Error, Debug)]
 pub enum ServerError {
+    /// Error from I/O operations.
     #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
+    /// Error from the network connection.
     #[error("Connection error - {0}")]
     Connection(#[from] ConnectionError),
 
+    /// Error from executing the client command.
     #[error("Command apply error - {0}")]
     CommandApply(#[from] CommandApplyError),
 
+    /// Error from parsing the client command.
     #[error("Command parse error - {0}")]
     CommandParse(#[from] CommandParseError),
 }

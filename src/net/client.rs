@@ -11,20 +11,26 @@ use super::{
     frame::Frame,
 };
 
+/// Error from the client.
 #[derive(Error, Debug)]
 pub enum ClientError {
+    /// Network connection dropped by the server.
     #[error("Connection reset by peer")]
     ConnectionReset,
 
+    /// The server could not complete a request.
     #[error("Error from server `{0}`")]
     ServerFailed(String),
 
+    /// The server returns unexpected frame.
     #[error("Unexpected frame (got {0:?})")]
     BadResponse(Frame),
 
+    /// Error from I/O operations.
     #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
+    /// Error from the network connection.
     #[error("Connection error - {0}")]
     Connection(#[from] ConnectionError),
 }

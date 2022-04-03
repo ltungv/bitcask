@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 /// should shutdown. This struct can be queried to check whether signal
 /// has been received.
 pub struct Shutdown {
-    // True if the shudown signal has been received
+    // True if the shutdown signal has been received
     shutdown: bool,
 
     // Channel's receiver for the shutdown signal
