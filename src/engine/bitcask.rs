@@ -4,15 +4,14 @@
 //! [Bitcask]: (https://riak.com/assets/bitcask-intro.pdf).
 //! [`engine::LogStructuredHashTable`]: opal::engine::LogStructuredHashTable
 
-pub(crate) mod bufio;
-pub(crate) mod logdir;
-pub(crate) mod logfile;
-pub(crate) mod utils;
+mod bufio;
+mod log;
+mod utils;
 
 use std::{
     cell::RefCell,
     fs,
-    io::{self, Seek, Write},
+    io::{self, Write},
     path::{self, Path},
     sync::{atomic, Arc, Mutex},
 };
@@ -21,13 +20,10 @@ use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::debug;
-
-use self::logfile::LogReader;
+use tracing::{debug, error};
 
 use super::KeyValueStore;
-use logdir::LogDir;
-use logfile::{LogIndex, LogWriter};
+use log::{LogDir, LogIndex, LogReader, LogWriter};
 
 /// A wrapper around [`BitCask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
@@ -49,12 +45,9 @@ impl KeyValueStore for BitCaskKeyValueStore {
     }
 }
 
-/// Error returned by this module
+/// Error returned by BitCask
 #[derive(Error, Debug)]
 pub enum BitCaskError {
-    #[error("Entry `{0:?}` is invalid")]
-    BadKeyDirEntry(KeyDirEntry),
-
     #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
@@ -190,10 +183,8 @@ impl BitCask {
     }
 }
 
-type KeyDir = DashMap<Vec<u8>, KeyDirEntry>;
-
 #[derive(Debug, Clone)]
-pub struct KeyDirEntry {
+struct KeyDirEntry {
     fileid: u64,
     len: u64,
     pos: u64,
@@ -201,32 +192,21 @@ pub struct KeyDirEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct HintFileEntry {
-    pub tstamp: u128,
-    pub len: u64,
-    pub pos: u64,
-    pub key: Vec<u8>,
+struct HintFileEntry {
+    tstamp: u128,
+    len: u64,
+    pos: u64,
+    key: Vec<u8>,
 }
 
-/// The data entry that gets appended to the data file on write.
 #[derive(Serialize, Deserialize, Debug)]
-pub struct DataFileEntry {
-    /// Local unix nano timestamp.
-    pub tstamp: u128,
-    /// Data of the key.
-    pub key: Vec<u8>,
-    /// Data of the value.
-    pub value: DataFileEntryValue,
+struct DataFileEntry {
+    tstamp: u128,
+    key: Vec<u8>,
+    value: Option<Vec<u8>>,
 }
 
-/// The data file entry's value.
-#[derive(Serialize, Deserialize, Debug)]
-pub enum DataFileEntryValue {
-    /// The key has been deleted.
-    Tombstone,
-    /// The value of the key.
-    Data(Vec<u8>),
-}
+type KeyDir = DashMap<Vec<u8>, KeyDirEntry>;
 
 #[derive(Debug)]
 struct BitCaskContext {
@@ -265,18 +245,19 @@ impl BitCaskWriter {
 
         match self.ctx.keydir.insert(key.to_vec(), keydir_entry) {
             Some(prev_keydir_entry) => {
-                let (_, prev_datafile_entry) = self
-                    .readers
-                    .borrow_mut()
-                    .get(&self.ctx.path, prev_keydir_entry.fileid)?
-                    .at::<DataFileEntry>(prev_keydir_entry.pos)?;
+                // NOTE: Unsafe usage.
+                // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+                // thus the readers can savely use memmap to access the data file randomly.
+                let prev_datafile_entry = unsafe {
+                    self.readers
+                        .borrow_mut()
+                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
+                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
+                };
+                // NOTE: `collect_garbage` must only be called after retrieving the previous key
+                // value otherwise we'll have an invalid keydir entry.
                 self.collect_garbage(prev_keydir_entry.len)?;
-                match prev_datafile_entry.value {
-                    DataFileEntryValue::Data(v) => Ok(Some(v)),
-                    DataFileEntryValue::Tombstone => {
-                        Err(BitCaskError::BadKeyDirEntry(prev_keydir_entry))
-                    }
-                }
+                Ok(prev_datafile_entry.value)
             }
             None => Ok(None),
         }
@@ -291,58 +272,72 @@ impl BitCaskWriter {
     fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         match self.ctx.keydir.remove(key) {
             Some((_, prev_keydir_entry)) => {
-                let (_, prev_datafile_entry) = self
-                    .readers
-                    .borrow_mut()
-                    .get(&self.ctx.path, prev_keydir_entry.fileid)?
-                    .at::<DataFileEntry>(prev_keydir_entry.pos)?;
-                self.collect_garbage(prev_keydir_entry.len)?;
+                // NOTE: Unsafe usage.
+                // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+                // thus the readers can savely use memmap to access the data file randomly.
+                let prev_datafile_entry = unsafe {
+                    self.readers
+                        .borrow_mut()
+                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
+                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
+                };
                 self.put_tombstone(utils::timestamp(), key)?;
-                match prev_datafile_entry.value {
-                    DataFileEntryValue::Data(v) => Ok(Some(v)),
-                    DataFileEntryValue::Tombstone => {
-                        Err(BitCaskError::BadKeyDirEntry(prev_keydir_entry))
-                    }
-                }
+                self.collect_garbage(prev_keydir_entry.len)?;
+                Ok(prev_datafile_entry.value)
             }
             None => Ok(None),
         }
     }
 
+    /// Merge data files by copying data from previous data files to the merge data file. Old data
+    /// files are deleted after the merge.
     fn merge(&mut self) -> Result<(), BitCaskError> {
         let merge_fileid = self.active_fileid + 1;
-        let mut merge_datafile_writer =
-            LogWriter::create(self.ctx.path.join(utils::datafile_name(merge_fileid)))?;
-        let mut merge_hintfile_writer =
-            LogWriter::create(self.ctx.path.join(utils::hintfile_name(merge_fileid)))?;
+        // NOTE: We use this explicit scope to control the lifetime of `readers` which mutably
+        // borrow self when `borrow_mut` is called. Both the log writers will also be dropped and
+        // flushed automatically at the end of scope.
+        {
+            let mut merge_pos = 0;
+            let mut merge_datafile_writer =
+                LogWriter::create(self.ctx.path.join(utils::datafile_name(merge_fileid)))?;
+            let mut merge_hintfile_writer =
+                LogWriter::create(self.ctx.path.join(utils::hintfile_name(merge_fileid)))?;
 
-        let mut readers = self.readers.borrow_mut();
-        let mut merge_pos = 0;
+            let mut readers = self.readers.borrow_mut();
+            for mut keydir_entry in self.ctx.keydir.iter_mut() {
+                // NOTE: Unsafe usage.
+                // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+                // thus the readers can savely use memmap to access the data file randomly.
+                let nbytes = unsafe {
+                    readers.get(&self.ctx.path, keydir_entry.fileid)?.copy_raw(
+                        keydir_entry.len,
+                        keydir_entry.pos,
+                        &mut merge_datafile_writer,
+                    )?
+                };
 
-        for mut keydir_entry in self.ctx.keydir.iter_mut() {
-            let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
-            reader.seek(io::SeekFrom::Start(keydir_entry.pos))?;
-            let nbytes = io::copy(reader, &mut merge_datafile_writer)?;
+                // update keydir so it points to the merge data file
+                keydir_entry.fileid = merge_fileid;
+                keydir_entry.len = nbytes;
+                keydir_entry.pos = merge_pos;
 
-            keydir_entry.fileid = merge_fileid;
-            keydir_entry.pos = merge_pos;
-            merge_pos += nbytes;
-
-            merge_hintfile_writer.append(&HintFileEntry {
-                tstamp: keydir_entry.tstamp,
-                len: keydir_entry.len,
-                pos: keydir_entry.pos,
-                key: keydir_entry.key().clone(),
-            })?;
+                merge_hintfile_writer.append(&HintFileEntry {
+                    tstamp: keydir_entry.tstamp,
+                    len: keydir_entry.len,
+                    pos: keydir_entry.pos,
+                    key: keydir_entry.key().clone(),
+                })?;
+                merge_pos += nbytes;
+            }
+            readers.drop_stale(merge_fileid);
         }
 
-        merge_datafile_writer.flush()?;
-        merge_hintfile_writer.flush()?;
+        self.ctx
+            .min_fileid
+            .store(merge_fileid, atomic::Ordering::SeqCst);
 
-        let stale_fileids = readers.stale_fileids(merge_fileid);
-        readers.drop_stale(merge_fileid);
-        drop(readers);
-
+        // Remove stale files from system
+        let stale_fileids = utils::sorted_fileids(&self.ctx.path)?.filter(|&id| id < merge_fileid);
         for id in stale_fileids {
             let hintfile_path = self.ctx.path.join(utils::hintfile_name(id));
             let datafile_path = self.ctx.path.join(utils::datafile_name(id));
@@ -355,11 +350,12 @@ impl BitCaskWriter {
             }
         }
 
-        self.garbage = 0;
         self.new_active_datafile(self.active_fileid + 2)?;
+        self.garbage = 0;
         Ok(())
     }
 
+    /// Apppend a data entry to the active data file.
     fn put_data(
         &mut self,
         tstamp: u128,
@@ -369,27 +365,31 @@ impl BitCaskWriter {
         let entry = DataFileEntry {
             tstamp,
             key: key.to_vec(),
-            value: DataFileEntryValue::Data(value.to_vec()),
+            value: Some(value.to_vec()),
         };
+
         let index = self.writer.append(&entry)?;
         self.writer.flush()?;
         self.collect_written(index.len)?;
         Ok(index)
     }
 
+    /// Apppend a tomestone entry to the active data file.
     fn put_tombstone(&mut self, tstamp: u128, key: &[u8]) -> Result<(), BitCaskError> {
         let entry = DataFileEntry {
             tstamp,
             key: key.to_vec(),
-            value: DataFileEntryValue::Tombstone,
+            value: None,
         };
+
         let index = self.writer.append(&entry)?;
         self.writer.flush()?;
+        self.garbage += index.len; // tombstones are wasted space
         self.collect_written(index.len)?;
-        self.collect_garbage(index.len)?;
         Ok(())
     }
 
+    /// Updates the active file ID and open a new data file with the new active ID.
     fn new_active_datafile(&mut self, fileid: u64) -> Result<(), BitCaskError> {
         self.active_fileid = fileid;
         self.writer =
@@ -397,6 +397,8 @@ impl BitCaskWriter {
         Ok(())
     }
 
+    /// Add the given amount to the number of written bytes and open a new active data file when
+    /// reaches the data file size threshold
     fn collect_written(&mut self, sz: u64) -> Result<(), BitCaskError> {
         self.written += sz;
         if self.written > self.ctx.conf.max_datafile_size {
@@ -405,6 +407,8 @@ impl BitCaskWriter {
         Ok(())
     }
 
+    /// Add the given amount to the number of garbage bytes and perform merge when reaches
+    /// garbage threshold.
     fn collect_garbage(&mut self, sz: u64) -> Result<(), BitCaskError> {
         self.garbage += sz;
         if self.garbage > self.ctx.conf.max_garbage_size {
@@ -413,6 +417,7 @@ impl BitCaskWriter {
         Ok(())
     }
 
+    /// Ensure all data and metadata are synchronized with the physical disk.
     fn sync_all(&mut self) -> Result<(), BitCaskError> {
         self.writer.sync_all()?;
         Ok(())
@@ -430,37 +435,43 @@ impl BitCaskReader {
         match self.ctx.keydir.get(key) {
             None => Ok(None),
             Some(index) => {
-                let min_fileid = self.ctx.min_fileid.load(atomic::Ordering::SeqCst);
-                let mut readers = self.readers.borrow_mut();
-                readers.drop_stale(min_fileid);
-
                 let keydir_entry = index.value();
-                let (_, datafile_entry) = readers
-                    .get(&self.ctx.path, keydir_entry.fileid)?
-                    .at::<DataFileEntry>(keydir_entry.pos)?;
+                // NOTE: We use an explicit scope to limit the lifetime of `readers` which mutably
+                // borrow `self`
+                let datafile_entry = {
+                    // Remove stale readers
+                    let mut readers = self.readers.borrow_mut();
+                    readers.drop_stale(self.ctx.min_fileid.load(atomic::Ordering::SeqCst));
 
-                match datafile_entry.value {
-                    DataFileEntryValue::Data(v) => Ok(Some(v)),
-                    DataFileEntryValue::Tombstone => {
-                        Err(BitCaskError::BadKeyDirEntry(keydir_entry.clone()))
+                    // NOTE: Unsafe usage.
+                    // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+                    // thus the readers can savely use memmap to access the data file randomly.
+                    unsafe {
+                        readers
+                            .get(&self.ctx.path, keydir_entry.fileid)?
+                            .at::<DataFileEntry>(keydir_entry.len, keydir_entry.pos)?
                     }
-                }
+                };
+                Ok(datafile_entry.value)
             }
         }
     }
 }
 
+/// Returns a list of sorted filed IDs by parsing the names of data files in the directory
+/// given by `path`.
 fn rebuild_keydir<P>(path: P) -> Result<(KeyDir, u64, u64), BitCaskError>
 where
     P: AsRef<Path>,
 {
     let keydir = KeyDir::default();
-    let fileids = utils::sorted_fileids(&path)?;
+    let fileids: Vec<u64> = utils::sorted_fileids(&path)?.collect();
     let active_fileid = fileids.last().map(|id| id + 1).unwrap_or_default();
 
     let mut garbage = 0;
     for fileid in fileids {
         let hintfile_path = path.as_ref().join(utils::hintfile_name(fileid));
+        // use the hint file if it exists cause it has less data to be read.
         if hintfile_path.exists() {
             populate_keydir_with_hintfile(&keydir, fileid, hintfile_path)?;
         } else {
@@ -481,6 +492,7 @@ where
 {
     let mut hintfile_reader = LogReader::open(path)?;
     while let Some((_, entry)) = hintfile_reader.next::<HintFileEntry>()? {
+        // Indices given by the hint file do not point to tombstones.
         keydir.insert(
             entry.key,
             KeyDirEntry {
@@ -506,8 +518,8 @@ where
     let mut datafile_reader = LogReader::open(path)?;
     while let Some((datafile_index, datafile_entry)) = datafile_reader.next::<DataFileEntry>()? {
         match datafile_entry.value {
-            DataFileEntryValue::Tombstone => garbage += datafile_index.len,
-            DataFileEntryValue::Data(_) => {
+            None => garbage += datafile_index.len,
+            Some(_) => {
                 if let Some(prev_keydir_entry) = keydir.insert(
                     datafile_entry.key,
                     KeyDirEntry {
@@ -523,29 +535,4 @@ where
         }
     }
     Ok(garbage)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use quickcheck::quickcheck;
-
-    quickcheck! {
-        fn fileids_sorted_correctly(n: u64) -> bool {
-            // keep the file handles until end of scope
-            let mut tmps = Vec::new();
-            // Create random datafiles and hintfiles in the directory
-            let dir = tempfile::tempdir().unwrap();
-            for fileid in 0..n.min(100) {
-                tmps.push(fs::File::create(dir.path().join(utils::datafile_name(fileid))).unwrap());
-                if rand::random() {
-                    tmps.push(fs::File::create(dir.path().join(utils::hintfile_name(fileid))).unwrap());
-                }
-            }
-
-            // check if ids are sorted
-            let fileids = utils::sorted_fileids(dir).unwrap();
-            fileids.iter().enumerate().all(|(i, &v)| i as u64 == v)
-        }
-    }
 }

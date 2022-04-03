@@ -13,6 +13,7 @@ pub use sledkv::SledKeyValueStore;
 /// A basic interface for a thread-safe key-value store that ensure consistent access to shared
 /// data from multiple different threads.
 pub trait KeyValueStore: Clone + Send + 'static {
+    /// Error type of the underlying engine
     type Error: std::error::Error + Send + Sync;
 
     /// Set the value of a key, overwriting any existing value at that key and return the overwritten

@@ -1,19 +1,60 @@
 use std::{
     fs,
-    io::{self, Read, Seek, Write},
+    io::{self, Write},
     path::Path,
 };
 
+use bytes::Buf;
 use serde::{de::DeserializeOwned, Serialize};
+use std::collections::BTreeMap;
 
-use super::bufio::{BufReaderWithPos, BufWriterWithPos};
+use super::{
+    bufio::{BufReaderWithPos, BufWriterWithPos},
+    utils,
+};
 
+/// A mapping of log file IDs to log file readers.
+#[derive(Debug, Default)]
+pub struct LogDir(BTreeMap<u64, LogReader>);
+
+impl LogDir {
+    /// Return the reader of the file with the given `fileid`. If there's no reader for the file
+    /// with the given `fileid`, create a new reader and return it.
+    pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&mut LogReader>
+    where
+        P: AsRef<Path>,
+    {
+        let reader = self.0.entry(fileid).or_insert(LogReader::open(
+            path.as_ref().join(utils::datafile_name(fileid)),
+        )?);
+        Ok(reader)
+    }
+
+    /// Return the lists of file IDs smaller than the given `min_fileid`.
+    pub fn stale_fileids(&self, min_fileid: u64) -> Vec<u64> {
+        self.0
+            .keys()
+            .filter(|&&id| id < min_fileid)
+            .cloned()
+            .collect()
+    }
+
+    /// Remove readers whose ID is smaller than the given `min_fileid`.
+    pub fn drop_stale(&mut self, min_fileid: u64) {
+        self.stale_fileids(min_fileid).iter().for_each(|id| {
+            self.0.remove(id);
+        });
+    }
+}
+
+/// Position and length of an log entry within a log file.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LogIndex {
     pub len: u64,
     pub pos: u64,
 }
 
+/// An append-only file writer that serializes data using `bincode`.
 #[derive(Debug)]
 pub struct LogWriter(BufWriterWithPos<fs::File>);
 
@@ -59,12 +100,7 @@ impl Write for LogWriter {
     }
 }
 
-/// An iterator over all entries in a data file and their indices.
-///
-/// This struct only supports reading in one direction from start to end to iterate over all
-/// entries in the given data file. Use [`DataFileReader`] to read entries at random positions.
-///
-/// [`DataFileReader`]: opal::engine::bitcask::datafile::DataFileReader
+/// A file reader that deserializes data using `bincode`.
 #[derive(Debug)]
 pub struct LogReader(BufReaderWithPos<fs::File>);
 
@@ -102,27 +138,38 @@ impl LogReader {
         }
     }
 
-    pub fn at<T>(&mut self, pos: u64) -> bincode::Result<(LogIndex, T)>
+    /// Return the entry at the given position by mapping the file segment directly into memory.
+    ///
+    /// # Unsafe
+    ///
+    /// The caller must ensure that the file segment given by `len` and `pos` is valid.
+    pub unsafe fn at<T>(&mut self, len: u64, pos: u64) -> bincode::Result<T>
     where
         T: DeserializeOwned,
     {
-        self.seek(io::SeekFrom::Start(pos))?;
-        let entry = bincode::deserialize_from(&mut self.0)?;
-        let len = self.0.pos() - pos;
-        let index = LogIndex { len, pos };
-        Ok((index, entry))
+        let mmap = memmap2::MmapOptions::new()
+            .offset(pos)
+            .len(len as usize)
+            // NOTE: we convert an io::Error into bincode::Error which might be undesirable
+            .map(self.0.get_ref())?;
+        bincode::deserialize(&mmap)
     }
-}
 
-impl Read for LogReader {
-    fn read(&mut self, b: &mut [u8]) -> std::result::Result<usize, std::io::Error> {
-        self.0.read(b)
-    }
-}
-
-impl Seek for LogReader {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::result::Result<u64, std::io::Error> {
-        self.0.seek(pos)
+    /// Copy the raw data at the given position into the writer at `dst` by mapping the file segment
+    /// directly into memory.
+    ///
+    /// # Unsafe
+    ///
+    /// The caller must ensure that the file segment given by `len` and `pos` is valid.
+    pub unsafe fn copy_raw<W>(&mut self, len: u64, pos: u64, dst: &mut W) -> io::Result<u64>
+    where
+        W: Write,
+    {
+        let mmap = memmap2::MmapOptions::new()
+            .offset(pos)
+            .len(len as usize)
+            .map(self.0.get_ref())?;
+        io::copy(&mut mmap.reader(), dst)
     }
 }
 
@@ -134,16 +181,13 @@ mod tests {
 
     quickcheck! {
         fn writer_position_updated_after_write(buf: Vec<u8>) -> bool {
-            // setup writer
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
-
             // write the entry
             let mut writer = LogWriter::create(&fpath).unwrap();
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
             writer.flush().unwrap();
-
             // succeed if we received the correct index
             idx1.pos == 0 && idx1.len == idx2.pos && idx1.len == idx2.len
         }
@@ -153,20 +197,17 @@ mod tests {
         fn reader_reads_entry_written_by_writer(buf: Vec<u8>) -> bool {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
-
             // write the entry
             let mut writer = LogWriter::create(&fpath).unwrap();
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
             writer.flush().unwrap();
-
             // read the entry
             let mut reader = LogReader::open(&fpath).unwrap();
-            let (idx1_from_reader, buf1) = reader.at::<Vec<u8>>(idx1.pos).unwrap();
-            let (idx2_from_reader, buf2) = reader.at::<Vec<u8>>(idx2.pos).unwrap();
-
+            let buf1 = unsafe { reader.at::<Vec<u8>>(idx1.len, idx1.pos).unwrap() };
+            let buf2 = unsafe { reader.at::<Vec<u8>>(idx2.len, idx2.pos).unwrap() };
             // succeed if we received the correct data given the positions
-            idx1 == idx1_from_reader && idx2 == idx2_from_reader && buf == buf1 && buf == buf2
+            buf == buf1 && buf == buf2
         }
     }
 
@@ -174,12 +215,10 @@ mod tests {
         fn reader_iterates_entries_written_by_writer(entries: Vec<Vec<u8>>) -> bool {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
-
             // write the entries
             let mut writer = LogWriter::create(&fpath).unwrap();
             let indices: Vec<LogIndex> = entries.iter().map(|buf| writer.append(&buf).unwrap()).collect();
             writer.flush().unwrap();
-
             // read the entries
             let mut reader = LogReader::open(&fpath).unwrap();
             for (idx, buf) in indices.iter().zip(entries) {
@@ -187,8 +226,11 @@ mod tests {
                 if *idx != idx_from_reader || buf != buf_from_reader {
                     return false;
                 }
+                let buf_from_reader = unsafe { reader.at::<Vec<u8>>(idx_from_reader.len, idx_from_reader.pos).unwrap() };
+                if buf != buf_from_reader {
+                    return false;
+                }
             }
-
             // succeed if we could iterate over all written data and received the correct indices
             true
         }
