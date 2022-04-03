@@ -27,9 +27,6 @@ use datadir::DataDir;
 use datafile::{DataFileEntryValue, DataFileIterator, DataFileWriter};
 use hintfile::{HintFileIterator, HintFileWriter};
 
-/// Merge log files when then number of unused bytes across all files exceeds this limit.
-const GARBAGE_THRESHOLD: u64 = 4 * 1024 * 1024; // 4MB
-
 /// A wrapper around [`BitCask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
 pub struct BitCaskKeyValueStore(pub BitCask);
@@ -64,8 +61,10 @@ pub enum BitCaskError {
 }
 
 /// Configuration for a `BitCask` instance.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BitCaskConfig {
+    max_datafile_size: u64,
+    max_garbage_size: u64,
     concurrency: usize,
 }
 
@@ -78,6 +77,18 @@ impl BitCaskConfig {
         BitCask::open(path, self)
     }
 
+    /// Set the max data file size. The writer will open a new data file when reaches this value.
+    pub fn max_datafile_size(&mut self, max_datafile_size: u64) -> &mut Self {
+        self.max_datafile_size = max_datafile_size;
+        self
+    }
+
+    /// Set the max garbage size. The writer will merge data files when reaches this value.
+    pub fn max_garbage_size(&mut self, max_garbage_size: u64) -> &mut Self {
+        self.max_garbage_size = max_garbage_size;
+        self
+    }
+
     /// Set the max number of concurrent readers.
     pub fn concurrency(&mut self, concurrency: usize) -> &mut Self {
         self.concurrency = concurrency;
@@ -88,6 +99,8 @@ impl BitCaskConfig {
 impl Default for BitCaskConfig {
     fn default() -> Self {
         Self {
+            max_datafile_size: 2 * 1024 * 1024 * 1024, // 2 GBs
+            max_garbage_size: 2 * 1024 * 1024 * 1024 * 30 / 100, // 30% of 2 GBs
             concurrency: num_cpus::get_physical(),
         }
     }
@@ -114,6 +127,7 @@ impl BitCask {
         debug!(?active_fileid, "Got new activate file ID");
 
         let ctx = Arc::new(BitCaskContext {
+            conf: conf.clone(),
             path: path.as_ref().to_path_buf(),
             min_fileid: atomic::AtomicU64::new(0),
             keydir,
@@ -186,6 +200,7 @@ pub struct KeyDirEntry {
 
 #[derive(Debug)]
 struct BitCaskContext {
+    conf: BitCaskConfig,
     path: path::PathBuf,
     min_fileid: atomic::AtomicU64,
     keydir: KeyDir,
@@ -209,7 +224,7 @@ impl BitCaskWriter {
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         let tstamp = utils::timestamp();
         let index = self.writer.data(tstamp, key, value)?;
-        self.writer.flush()?;
+        self.cleanup_writer()?;
 
         let keydir_entry = KeyDirEntry {
             fileid: self.active_fileid,
@@ -255,9 +270,9 @@ impl BitCaskWriter {
                 };
                 // Write a tombstone value
                 self.writer.tombstone(utils::timestamp(), key)?;
-                self.writer.flush()?;
-                // Accumulated unused bytes count when we delete the given key
+                self.cleanup_writer()?;
                 self.gc(prev_keydir_entry.len)?;
+
                 match prev_datafile_entry.value {
                     DataFileEntryValue::Data(v) => Ok(Some(v)),
                     DataFileEntryValue::Tombstone => {
@@ -304,6 +319,7 @@ impl BitCaskWriter {
 
         let stale_fileids = readers.stale_fileids(merge_fileid);
         readers.drop_stale(merge_fileid);
+        drop(readers);
 
         for id in stale_fileids {
             let hintfile_path = self.ctx.path.join(utils::hintfile_name(id));
@@ -318,17 +334,30 @@ impl BitCaskWriter {
         }
 
         self.garbage = 0;
-        self.active_fileid += 2;
-        self.writer =
-            DataFileWriter::create(self.ctx.path.join(utils::datafile_name(self.active_fileid)))?;
+        self.new_writer(2)?;
         Ok(())
     }
 
     fn gc(&mut self, sz: u64) -> Result<(), BitCaskError> {
         self.garbage += sz;
-        if self.garbage > GARBAGE_THRESHOLD {
+        if self.garbage > self.ctx.conf.max_garbage_size {
             self.merge()?;
         }
+        Ok(())
+    }
+
+    fn cleanup_writer(&mut self) -> Result<(), BitCaskError> {
+        self.writer.flush()?;
+        if self.writer.pos() > self.ctx.conf.max_datafile_size {
+            self.new_writer(1)?;
+        }
+        Ok(())
+    }
+
+    fn new_writer(&mut self, active_fileid_step: u64) -> Result<(), BitCaskError> {
+        self.active_fileid += active_fileid_step;
+        self.writer =
+            DataFileWriter::create(self.ctx.path.join(utils::datafile_name(self.active_fileid)))?;
         Ok(())
     }
 
