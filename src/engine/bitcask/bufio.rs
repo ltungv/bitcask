@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
-};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 /// A wrapper a round `BufReader` that keeps track of the last read position.
 #[derive(Debug)]

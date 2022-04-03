@@ -5,27 +5,29 @@
 //! [`engine::LogStructuredHashTable`]: opal::engine::LogStructuredHashTable
 
 pub(crate) mod bufio;
-pub(crate) mod datadir;
-pub(crate) mod datafile;
-pub(crate) mod hintfile;
+pub(crate) mod logdir;
+pub(crate) mod logfile;
 pub(crate) mod utils;
 
 use std::{
     cell::RefCell,
-    fs, io,
+    fs,
+    io::{self, Seek, Write},
     path::{self, Path},
     sync::{atomic, Arc, Mutex},
 };
 
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::debug;
 
+use self::logfile::LogReader;
+
 use super::KeyValueStore;
-use datadir::DataDir;
-use datafile::{DataFileEntryValue, DataFileIterator, DataFileWriter};
-use hintfile::{HintFileIterator, HintFileWriter};
+use logdir::LogDir;
+use logfile::{LogIndex, LogWriter};
 
 /// A wrapper around [`BitCask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
@@ -143,13 +145,13 @@ impl BitCask {
                 .expect("unreachable error");
         }
 
-        let writer =
-            DataFileWriter::create(path.as_ref().join(utils::datafile_name(active_fileid)))?;
+        let writer = LogWriter::create(path.as_ref().join(utils::datafile_name(active_fileid)))?;
         let writer = Arc::new(Mutex::new(BitCaskWriter {
             ctx,
             readers: Default::default(),
             writer,
             active_fileid,
+            written: 0,
             garbage,
         }));
 
@@ -198,6 +200,34 @@ pub struct KeyDirEntry {
     tstamp: u128,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct HintFileEntry {
+    pub tstamp: u128,
+    pub len: u64,
+    pub pos: u64,
+    pub key: Vec<u8>,
+}
+
+/// The data entry that gets appended to the data file on write.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DataFileEntry {
+    /// Local unix nano timestamp.
+    pub tstamp: u128,
+    /// Data of the key.
+    pub key: Vec<u8>,
+    /// Data of the value.
+    pub value: DataFileEntryValue,
+}
+
+/// The data file entry's value.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum DataFileEntryValue {
+    /// The key has been deleted.
+    Tombstone,
+    /// The value of the key.
+    Data(Vec<u8>),
+}
+
 #[derive(Debug)]
 struct BitCaskContext {
     conf: BitCaskConfig,
@@ -209,9 +239,10 @@ struct BitCaskContext {
 #[derive(Debug)]
 struct BitCaskWriter {
     ctx: Arc<BitCaskContext>,
-    readers: RefCell<DataDir>,
-    writer: DataFileWriter,
+    readers: RefCell<LogDir>,
+    writer: LogWriter,
     active_fileid: u64,
+    written: u64,
     garbage: u64,
 }
 
@@ -223,8 +254,7 @@ impl BitCaskWriter {
     /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         let tstamp = utils::timestamp();
-        let index = self.writer.data(tstamp, key, value)?;
-        self.cleanup_writer()?;
+        let index = self.put_data(tstamp, key, value)?;
 
         let keydir_entry = KeyDirEntry {
             fileid: self.active_fileid,
@@ -235,13 +265,12 @@ impl BitCaskWriter {
 
         match self.ctx.keydir.insert(key.to_vec(), keydir_entry) {
             Some(prev_keydir_entry) => {
-                let prev_datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
-                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
-                        .entry(prev_keydir_entry.len, prev_keydir_entry.pos)?
-                };
-                self.gc(prev_keydir_entry.len)?;
+                let (_, prev_datafile_entry) = self
+                    .readers
+                    .borrow_mut()
+                    .get(&self.ctx.path, prev_keydir_entry.fileid)?
+                    .at::<DataFileEntry>(prev_keydir_entry.pos)?;
+                self.collect_garbage(prev_keydir_entry.len)?;
                 match prev_datafile_entry.value {
                     DataFileEntryValue::Data(v) => Ok(Some(v)),
                     DataFileEntryValue::Tombstone => {
@@ -262,17 +291,13 @@ impl BitCaskWriter {
     fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
         match self.ctx.keydir.remove(key) {
             Some((_, prev_keydir_entry)) => {
-                let prev_datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
-                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
-                        .entry(prev_keydir_entry.len, prev_keydir_entry.pos)?
-                };
-                // Write a tombstone value
-                self.writer.tombstone(utils::timestamp(), key)?;
-                self.cleanup_writer()?;
-                self.gc(prev_keydir_entry.len)?;
-
+                let (_, prev_datafile_entry) = self
+                    .readers
+                    .borrow_mut()
+                    .get(&self.ctx.path, prev_keydir_entry.fileid)?
+                    .at::<DataFileEntry>(prev_keydir_entry.pos)?;
+                self.collect_garbage(prev_keydir_entry.len)?;
+                self.put_tombstone(utils::timestamp(), key)?;
                 match prev_datafile_entry.value {
                     DataFileEntryValue::Data(v) => Ok(Some(v)),
                     DataFileEntryValue::Tombstone => {
@@ -287,31 +312,28 @@ impl BitCaskWriter {
     fn merge(&mut self) -> Result<(), BitCaskError> {
         let merge_fileid = self.active_fileid + 1;
         let mut merge_datafile_writer =
-            DataFileWriter::create(self.ctx.path.join(utils::datafile_name(merge_fileid)))?;
+            LogWriter::create(self.ctx.path.join(utils::datafile_name(merge_fileid)))?;
         let mut merge_hintfile_writer =
-            HintFileWriter::create(self.ctx.path.join(utils::hintfile_name(merge_fileid)))?;
+            LogWriter::create(self.ctx.path.join(utils::hintfile_name(merge_fileid)))?;
 
         let mut readers = self.readers.borrow_mut();
+        let mut merge_pos = 0;
+
         for mut keydir_entry in self.ctx.keydir.iter_mut() {
-            let merge_pos = merge_datafile_writer.pos();
             let reader = readers.get(&self.ctx.path, keydir_entry.fileid)?;
-            unsafe {
-                reader.copy(
-                    keydir_entry.len,
-                    keydir_entry.pos,
-                    merge_datafile_writer.writer(),
-                )?
-            };
+            reader.seek(io::SeekFrom::Start(keydir_entry.pos))?;
+            let nbytes = io::copy(reader, &mut merge_datafile_writer)?;
 
             keydir_entry.fileid = merge_fileid;
             keydir_entry.pos = merge_pos;
+            merge_pos += nbytes;
 
-            merge_hintfile_writer.append(
-                keydir_entry.tstamp,
-                keydir_entry.len,
-                keydir_entry.pos,
-                keydir_entry.key(),
-            )?;
+            merge_hintfile_writer.append(&HintFileEntry {
+                tstamp: keydir_entry.tstamp,
+                len: keydir_entry.len,
+                pos: keydir_entry.pos,
+                key: keydir_entry.key().clone(),
+            })?;
         }
 
         merge_datafile_writer.flush()?;
@@ -334,30 +356,60 @@ impl BitCaskWriter {
         }
 
         self.garbage = 0;
-        self.new_writer(2)?;
+        self.new_active_datafile(self.active_fileid + 2)?;
         Ok(())
     }
 
-    fn gc(&mut self, sz: u64) -> Result<(), BitCaskError> {
+    fn put_data(
+        &mut self,
+        tstamp: u128,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<LogIndex, BitCaskError> {
+        let entry = DataFileEntry {
+            tstamp,
+            key: key.to_vec(),
+            value: DataFileEntryValue::Data(value.to_vec()),
+        };
+        let index = self.writer.append(&entry)?;
+        self.writer.flush()?;
+        self.collect_written(index.len)?;
+        Ok(index)
+    }
+
+    fn put_tombstone(&mut self, tstamp: u128, key: &[u8]) -> Result<(), BitCaskError> {
+        let entry = DataFileEntry {
+            tstamp,
+            key: key.to_vec(),
+            value: DataFileEntryValue::Tombstone,
+        };
+        let index = self.writer.append(&entry)?;
+        self.writer.flush()?;
+        self.collect_written(index.len)?;
+        self.collect_garbage(index.len)?;
+        Ok(())
+    }
+
+    fn new_active_datafile(&mut self, fileid: u64) -> Result<(), BitCaskError> {
+        self.active_fileid = fileid;
+        self.writer =
+            LogWriter::create(self.ctx.path.join(utils::datafile_name(self.active_fileid)))?;
+        Ok(())
+    }
+
+    fn collect_written(&mut self, sz: u64) -> Result<(), BitCaskError> {
+        self.written += sz;
+        if self.written > self.ctx.conf.max_datafile_size {
+            self.new_active_datafile(self.active_fileid + 1)?;
+        }
+        Ok(())
+    }
+
+    fn collect_garbage(&mut self, sz: u64) -> Result<(), BitCaskError> {
         self.garbage += sz;
         if self.garbage > self.ctx.conf.max_garbage_size {
             self.merge()?;
         }
-        Ok(())
-    }
-
-    fn cleanup_writer(&mut self) -> Result<(), BitCaskError> {
-        self.writer.flush()?;
-        if self.writer.pos() > self.ctx.conf.max_datafile_size {
-            self.new_writer(1)?;
-        }
-        Ok(())
-    }
-
-    fn new_writer(&mut self, active_fileid_step: u64) -> Result<(), BitCaskError> {
-        self.active_fileid += active_fileid_step;
-        self.writer =
-            DataFileWriter::create(self.ctx.path.join(utils::datafile_name(self.active_fileid)))?;
         Ok(())
     }
 
@@ -370,7 +422,7 @@ impl BitCaskWriter {
 #[derive(Debug)]
 struct BitCaskReader {
     ctx: Arc<BitCaskContext>,
-    readers: RefCell<DataDir>,
+    readers: RefCell<LogDir>,
 }
 
 impl BitCaskReader {
@@ -383,11 +435,9 @@ impl BitCaskReader {
                 readers.drop_stale(min_fileid);
 
                 let keydir_entry = index.value();
-                let datafile_entry = unsafe {
-                    readers
-                        .get(&self.ctx.path, keydir_entry.fileid)?
-                        .entry(keydir_entry.len, keydir_entry.pos)?
-                };
+                let (_, datafile_entry) = readers
+                    .get(&self.ctx.path, keydir_entry.fileid)?
+                    .at::<DataFileEntry>(keydir_entry.pos)?;
 
                 match datafile_entry.value {
                     DataFileEntryValue::Data(v) => Ok(Some(v)),
@@ -429,8 +479,8 @@ fn populate_keydir_with_hintfile<P>(
 where
     P: AsRef<Path>,
 {
-    let mut hintfile_iter = HintFileIterator::open(path)?;
-    while let Some(entry) = hintfile_iter.entry()? {
+    let mut hintfile_reader = LogReader::open(path)?;
+    while let Some((_, entry)) = hintfile_reader.next::<HintFileEntry>()? {
         keydir.insert(
             entry.key,
             KeyDirEntry {
@@ -453,8 +503,8 @@ where
     P: AsRef<Path>,
 {
     let mut garbage = 0;
-    let mut datafile_iter = DataFileIterator::open(path)?;
-    while let Some((datafile_index, datafile_entry)) = datafile_iter.entry()? {
+    let mut datafile_reader = LogReader::open(path)?;
+    while let Some((datafile_index, datafile_entry)) = datafile_reader.next::<DataFileEntry>()? {
         match datafile_entry.value {
             DataFileEntryValue::Tombstone => garbage += datafile_index.len,
             DataFileEntryValue::Data(_) => {

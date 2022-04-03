@@ -1,16 +1,16 @@
 use std::{collections::BTreeMap, io, path::Path};
 
-use super::{datafile::DataFileReader, utils};
+use super::{logfile::LogReader, utils};
 
 #[derive(Debug, Default)]
-pub struct DataDir(BTreeMap<u64, DataFileReader>);
+pub struct LogDir(BTreeMap<u64, LogReader>);
 
-impl DataDir {
-    pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&DataFileReader>
+impl LogDir {
+    pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&mut LogReader>
     where
         P: AsRef<Path>,
     {
-        let reader = self.0.entry(fileid).or_insert(DataFileReader::open(
+        let reader = self.0.entry(fileid).or_insert(LogReader::open(
             path.as_ref().join(utils::datafile_name(fileid)),
         )?);
         Ok(reader)

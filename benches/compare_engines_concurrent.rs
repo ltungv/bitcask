@@ -4,9 +4,7 @@ use common::{
     concurrent_read_bulk_bench_iter, concurrent_write_bulk_bench_iter, get_bitcask, get_dashmap,
     get_sled, get_threadpool, rand_kv_pairs, KeyValuePair,
 };
-use criterion::{
-    criterion_group, criterion_main, BatchSize, Bencher, Criterion, Throughput,
-};
+use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion, Throughput};
 use opal::engine::{self, KeyValueStore};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
