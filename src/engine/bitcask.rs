@@ -16,6 +16,7 @@ use std::{
     sync::{atomic, Arc, Mutex},
 };
 
+use bytes::Bytes;
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -33,15 +34,15 @@ impl KeyValueStore for BitCaskKeyValueStore {
     type Error = BitCaskError;
 
     fn set(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.0.put(key, value)
+        self.0.put(key, value).map(|v| v.map(|v| v.to_vec()))
     }
 
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.0.get(key)
+        self.0.get(key).map(|v| v.map(|v| v.to_vec()))
     }
 
     fn del(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.0.delete(key)
+        self.0.delete(key).map(|v| v.map(|v| v.to_vec()))
     }
 }
 
@@ -90,12 +91,13 @@ impl BitCaskConfig {
         self
     }
 }
-
 impl Default for BitCaskConfig {
     fn default() -> Self {
+        let max_datafile_size: u64 = 2 * 1024 * 1024 * 1024; // 2 GBs
+        let max_garbage_size = max_datafile_size * 30 / 100; // 2 Gbs * 30%
         Self {
-            max_datafile_size: 2 * 1024 * 1024 * 1024, // 2 GBs
-            max_garbage_size: 2 * 1024 * 1024 * 1024 * 30 / 100, // 30% of 2 GBs
+            max_datafile_size,
+            max_garbage_size,
             concurrency: num_cpus::get_physical(),
         }
     }
@@ -151,7 +153,7 @@ impl BitCask {
         Ok(BitCask { writer, readers })
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
+    fn get(&self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
         let backoff = Backoff::new();
         loop {
             if let Some(reader) = self.readers.pop() {
@@ -166,11 +168,11 @@ impl BitCask {
         }
     }
 
-    fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
         self.writer.lock().unwrap().put(key, value)
     }
 
-    fn delete(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
+    fn delete(&self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
         self.writer.lock().unwrap().delete(key)
     }
 
@@ -196,17 +198,17 @@ struct HintFileEntry {
     tstamp: u128,
     len: u64,
     pos: u64,
-    key: Vec<u8>,
+    key: Bytes,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DataFileEntry {
     tstamp: u128,
-    key: Vec<u8>,
-    value: Option<Vec<u8>>,
+    key: Bytes,
+    value: Option<Bytes>,
 }
 
-type KeyDir = DashMap<Vec<u8>, KeyDirEntry>;
+type KeyDir = DashMap<Bytes, KeyDirEntry>;
 
 #[derive(Debug)]
 struct BitCaskContext {
@@ -232,7 +234,7 @@ impl BitCaskWriter {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
+    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
         let tstamp = utils::timestamp();
         let index = self.put_data(tstamp, key, value)?;
 
@@ -243,7 +245,11 @@ impl BitCaskWriter {
             tstamp,
         };
 
-        match self.ctx.keydir.insert(key.to_vec(), keydir_entry) {
+        match self
+            .ctx
+            .keydir
+            .insert(Bytes::copy_from_slice(key), keydir_entry)
+        {
             Some(prev_keydir_entry) => {
                 // NOTE: Unsafe usage.
                 // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
@@ -269,7 +275,7 @@ impl BitCaskWriter {
     ///
     /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
+    fn delete(&mut self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
         match self.ctx.keydir.remove(key) {
             Some((_, prev_keydir_entry)) => {
                 // NOTE: Unsafe usage.
@@ -321,13 +327,13 @@ impl BitCaskWriter {
                 keydir_entry.len = nbytes;
                 keydir_entry.pos = merge_pos;
 
+                merge_pos += nbytes;
                 merge_hintfile_writer.append(&HintFileEntry {
                     tstamp: keydir_entry.tstamp,
                     len: keydir_entry.len,
                     pos: keydir_entry.pos,
                     key: keydir_entry.key().clone(),
                 })?;
-                merge_pos += nbytes;
             }
             readers.drop_stale(merge_fileid);
         }
@@ -364,8 +370,8 @@ impl BitCaskWriter {
     ) -> Result<LogIndex, BitCaskError> {
         let entry = DataFileEntry {
             tstamp,
-            key: key.to_vec(),
-            value: Some(value.to_vec()),
+            key: Bytes::copy_from_slice(key),
+            value: Some(Bytes::copy_from_slice(value)),
         };
 
         let index = self.writer.append(&entry)?;
@@ -378,7 +384,7 @@ impl BitCaskWriter {
     fn put_tombstone(&mut self, tstamp: u128, key: &[u8]) -> Result<(), BitCaskError> {
         let entry = DataFileEntry {
             tstamp,
-            key: key.to_vec(),
+            key: Bytes::copy_from_slice(key),
             value: None,
         };
 
@@ -394,6 +400,7 @@ impl BitCaskWriter {
         self.active_fileid = fileid;
         self.writer =
             LogWriter::create(self.ctx.path.join(utils::datafile_name(self.active_fileid)))?;
+        self.written = 0;
         Ok(())
     }
 
@@ -431,7 +438,7 @@ struct BitCaskReader {
 }
 
 impl BitCaskReader {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BitCaskError> {
+    fn get(&self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
         match self.ctx.keydir.get(key) {
             None => Ok(None),
             Some(index) => {
@@ -465,11 +472,15 @@ where
     P: AsRef<Path>,
 {
     let keydir = KeyDir::default();
-    let fileids: Vec<u64> = utils::sorted_fileids(&path)?.collect();
-    let active_fileid = fileids.last().map(|id| id + 1).unwrap_or_default();
+    let fileids = utils::sorted_fileids(&path)?;
 
+    let mut active_fileid = 0;
     let mut garbage = 0;
     for fileid in fileids {
+        if fileid > active_fileid {
+            active_fileid = fileid;
+        }
+
         let hintfile_path = path.as_ref().join(utils::hintfile_name(fileid));
         // use the hint file if it exists cause it has less data to be read.
         if hintfile_path.exists() {
@@ -479,6 +490,11 @@ where
             garbage += populate_keydir_with_datafile(&keydir, fileid, datafile_path)?;
         }
     }
+
+    if active_fileid > 0 {
+        active_fileid += 1;
+    }
+
     Ok((keydir, active_fileid, garbage))
 }
 

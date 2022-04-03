@@ -19,6 +19,13 @@ pub fn concurrent_write_bulk_bench_iter<E>(
 ) where
     E: KeyValueStore,
 {
+    concurrent_write_bulk_bench_iter_no_tempdir((engine, kv_pairs));
+}
+
+pub fn concurrent_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
+where
+    E: KeyValueStore,
+{
     kv_pairs.par_iter().for_each_with(engine, |engine, (k, v)| {
         engine.set(black_box(k), black_box(v)).unwrap();
     });
@@ -36,6 +43,13 @@ where
 pub fn sequential_write_bulk_bench_iter<E>(
     (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
 ) where
+    E: KeyValueStore,
+{
+    sequential_write_bulk_bench_iter_no_tempdir((engine, kv_pairs))
+}
+
+pub fn sequential_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
+where
     E: KeyValueStore,
 {
     kv_pairs.iter().for_each(|(k, v)| {
