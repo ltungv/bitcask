@@ -1,22 +1,22 @@
 mod common;
 
-use common::{get_bitcask, get_dashmap, get_sled, get_threadpool, prebuilt_kv_pairs};
+use common::{
+    concurrent_read_bulk_bench_iter, concurrent_write_bulk_bench_iter, get_bitcask, get_dashmap,
+    get_sled, get_threadpool, rand_kv_pairs, KeyValuePair,
+};
 use criterion::{
-    black_box, criterion_group, criterion_main, BatchSize, Bencher, BenchmarkId, Criterion, Throughput
+    criterion_group, criterion_main, BatchSize, Bencher, Criterion, Throughput,
 };
 use opal::engine::{self, KeyValueStore};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
-use rayon::ThreadPoolBuilder;
-use tempfile::TempDir;
 
 const ITER: usize = 1000;
 const KEY_SIZE: usize = 1000;
 const VAL_SIZE: usize = 1000;
 
 pub fn bench_write(c: &mut Criterion) {
-    let phys_cpus = num_cpus::get_physical();
-    let kv_pairs = prebuilt_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
+    let kv_pairs = rand_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
     let mut nbytes = 0;
     for (k, v) in kv_pairs.iter() {
         nbytes += k.len() + v.len();
@@ -26,18 +26,18 @@ pub fn bench_write(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(nbytes as u64));
 
     g.bench_with_input(
-        BenchmarkId::new("bitcask", phys_cpus),
-        &(&kv_pairs, engine::Type::BitCask, phys_cpus),
+        "bitcask",
+        &(&kv_pairs, engine::Type::BitCask),
         concurrent_write_bulk_bench,
     );
     g.bench_with_input(
-        BenchmarkId::new("sled", phys_cpus),
-        &(&kv_pairs, engine::Type::Sled, phys_cpus),
+        "sled",
+        &(&kv_pairs, engine::Type::Sled),
         concurrent_write_bulk_bench,
     );
     g.bench_with_input(
-        BenchmarkId::new("dashmap", phys_cpus),
-        &(&kv_pairs, engine::Type::DashMap, phys_cpus),
+        "dashmap",
+        &(&kv_pairs, engine::Type::DashMap),
         concurrent_write_bulk_bench,
     );
     g.finish();
@@ -45,13 +45,9 @@ pub fn bench_write(c: &mut Criterion) {
 
 fn concurrent_write_bulk_bench(
     b: &mut Bencher,
-    (kv_pairs, engine, nthreads): &(&Vec<(Vec<u8>, Vec<u8>)>, engine::Type, usize),
+    (kv_pairs, engine): &(&Vec<KeyValuePair>, engine::Type),
 ) {
-    let pool = ThreadPoolBuilder::new()
-        .num_threads(*nthreads)
-        .build()
-        .unwrap();
-
+    let pool = get_threadpool(num_cpus::get_physical());
     match *engine {
         engine::Type::BitCask => {
             pool.install(|| {
@@ -92,24 +88,8 @@ fn concurrent_write_bulk_bench(
     }
 }
 
-fn concurrent_write_bulk_bench_iter<E>(
-    (engine, kv_pairs, _tmpdir): (E, Vec<(Vec<u8>, Vec<u8>)>, TempDir),
-) where
-    E: KeyValueStore,
-{
-    rayon::scope(move |s| {
-        kv_pairs.into_iter().for_each(|(k, v)| {
-            let engine = engine.clone();
-            s.spawn(move |_| {
-                engine.set(black_box(&k), black_box(&v)).unwrap();
-            });
-        });
-    });
-}
-
 pub fn bench_read(c: &mut Criterion) {
-    let phys_cpus = num_cpus::get_physical();
-    let kv_pairs = prebuilt_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
+    let kv_pairs = rand_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
     let mut nbytes = 0;
     for (k, v) in kv_pairs.iter() {
         nbytes += k.len() + v.len();
@@ -119,18 +99,18 @@ pub fn bench_read(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(nbytes as u64));
 
     g.bench_with_input(
-        BenchmarkId::new("bitcask", phys_cpus),
-        &(&kv_pairs, engine::Type::BitCask, phys_cpus),
+        "bitcask",
+        &(&kv_pairs, engine::Type::BitCask),
         concurrent_read_bulk_bench,
     );
     g.bench_with_input(
-        BenchmarkId::new("sled", phys_cpus),
-        &(&kv_pairs, engine::Type::Sled, phys_cpus),
+        "sled",
+        &(&kv_pairs, engine::Type::Sled),
         concurrent_read_bulk_bench,
     );
     g.bench_with_input(
-        BenchmarkId::new("dashmap", phys_cpus),
-        &(&kv_pairs, engine::Type::DashMap, phys_cpus),
+        "dashmap",
+        &(&kv_pairs, engine::Type::DashMap),
         concurrent_read_bulk_bench,
     );
     g.finish();
@@ -138,10 +118,9 @@ pub fn bench_read(c: &mut Criterion) {
 
 fn concurrent_read_bulk_bench(
     b: &mut Bencher,
-    (kv_pairs, engine, nthreads): &(&Vec<(Vec<u8>, Vec<u8>)>, engine::Type, usize),
+    (kv_pairs, engine): &(&Vec<KeyValuePair>, engine::Type),
 ) {
-    let pool = get_threadpool(*nthreads);
-
+    let pool = get_threadpool(num_cpus::get_physical());
     let mut rng = StdRng::from_seed([0u8; 32]);
     match *engine {
         engine::Type::BitCask => {
@@ -149,7 +128,6 @@ fn concurrent_read_bulk_bench(
             kv_pairs.iter().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();
             });
-
             pool.install(move || {
                 b.iter_batched(
                     || {
@@ -167,7 +145,6 @@ fn concurrent_read_bulk_bench(
             kv_pairs.iter().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();
             });
-
             pool.install(move || {
                 b.iter_batched(
                     || {
@@ -185,7 +162,6 @@ fn concurrent_read_bulk_bench(
             kv_pairs.iter().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();
             });
-
             pool.install(move || {
                 b.iter_batched(
                     || {
@@ -199,20 +175,6 @@ fn concurrent_read_bulk_bench(
             });
         }
     }
-}
-
-fn concurrent_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<(Vec<u8>, Vec<u8>)>))
-where
-    E: KeyValueStore,
-{
-    rayon::scope(move |s| {
-        kv_pairs.into_iter().for_each(|(k, _)| {
-            let engine = engine.clone();
-            s.spawn(move |_| {
-                engine.get(black_box(&k)).unwrap();
-            });
-        });
-    })
 }
 
 criterion_group!(

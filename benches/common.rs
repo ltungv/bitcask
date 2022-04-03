@@ -1,10 +1,56 @@
-use opal::engine::{BitCaskConfig, BitCaskKeyValueStore, DashMapKeyValueStore, SledKeyValueStore};
+use criterion::black_box;
+use opal::engine::{
+    BitCaskConfig, BitCaskKeyValueStore, DashMapKeyValueStore, KeyValueStore, SledKeyValueStore,
+};
 use rand::{
     distributions::{Standard, Uniform},
     prelude::*,
 };
-use rayon::{ThreadPool, ThreadPoolBuilder};
+use rayon::{
+    iter::{IntoParallelRefIterator, ParallelIterator},
+    ThreadPool, ThreadPoolBuilder,
+};
 use tempfile::TempDir;
+
+pub type KeyValuePair = (Vec<u8>, Vec<u8>);
+
+pub fn concurrent_write_bulk_bench_iter<E>(
+    (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
+) where
+    E: KeyValueStore,
+{
+    kv_pairs.par_iter().for_each_with(engine, |engine, (k, v)| {
+        engine.set(black_box(k), black_box(v)).unwrap();
+    });
+}
+
+pub fn concurrent_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
+where
+    E: KeyValueStore,
+{
+    kv_pairs.par_iter().for_each_with(engine, |engine, (k, _)| {
+        engine.get(black_box(k)).unwrap();
+    });
+}
+
+pub fn sequential_write_bulk_bench_iter<E>(
+    (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
+) where
+    E: KeyValueStore,
+{
+    kv_pairs.iter().for_each(|(k, v)| {
+        engine.set(black_box(k), black_box(v)).unwrap();
+    });
+}
+
+pub fn sequential_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
+where
+    E: KeyValueStore,
+{
+    kv_pairs.iter().for_each(|(k, _)| {
+        engine.get(black_box(k)).unwrap();
+    });
+}
 
 pub fn get_bitcask() -> (BitCaskKeyValueStore, TempDir) {
     let tmpdir = TempDir::new().unwrap();
@@ -32,7 +78,7 @@ pub fn get_threadpool(nthreads: usize) -> ThreadPool {
         .unwrap()
 }
 
-pub fn prebuilt_kv_pairs(size: usize, key_size: usize, val_size: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+pub fn rand_kv_pairs(size: usize, key_size: usize, val_size: usize) -> Vec<KeyValuePair> {
     let mut rng = StdRng::from_seed([0u8; 32]);
     let key_dist = Uniform::from(1..key_size);
     let val_dist = Uniform::from(1..val_size);
@@ -41,12 +87,12 @@ pub fn prebuilt_kv_pairs(size: usize, key_size: usize, val_size: usize) -> Vec<(
         .map(|_| {
             let ksz = key_dist.sample(&mut rng);
             let vsz = val_dist.sample(&mut rng);
-            rand_key_value(&mut rng, ksz, vsz)
+            rand_kv_pair(&mut rng, ksz, vsz)
         })
         .collect()
 }
 
-pub fn rand_key_value<R>(rng: &mut R, key_size: usize, val_size: usize) -> (Vec<u8>, Vec<u8>)
+pub fn rand_kv_pair<R>(rng: &mut R, key_size: usize, val_size: usize) -> KeyValuePair
 where
     R: Rng,
 {

@@ -42,5 +42,5 @@ name = "compare_engines_sequential"
 harness = false
 
 [[bench]]
-name = "bitcask_concurrent"
+name = "bitcask"
 harness = false
