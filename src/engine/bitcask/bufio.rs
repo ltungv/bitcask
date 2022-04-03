@@ -28,6 +28,11 @@ where
     pub fn pos(&self) -> u64 {
         self.pos
     }
+
+    /// Return the reference to the underlying reader.
+    pub fn get_ref(&self) -> &R {
+        self.reader.get_ref()
+    }
 }
 
 impl<R> Read for BufReaderWithPos<R>
@@ -78,6 +83,11 @@ where
     pub fn pos(&self) -> u64 {
         self.pos
     }
+
+    /// Return the reference to the underlying writer.
+    pub fn get_ref(&self) -> &W {
+        self.writer.get_ref()
+    }
 }
 
 impl<W> Write for BufWriterWithPos<W>
@@ -105,11 +115,5 @@ where
             self.pos = posn;
             posn
         })
-    }
-}
-
-impl BufWriterWithPos<fs::File> {
-    pub fn sync_all(&mut self) -> io::Result<()> {
-        self.writer.get_ref().sync_all()
     }
 }

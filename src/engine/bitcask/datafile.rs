@@ -194,7 +194,7 @@ impl DataFileWriter {
 
     /// Synchronize the writer state with the file system and ensure all data is physically written.
     pub fn sync_all(&mut self) -> io::Result<()> {
-        self.0.sync_all()?;
+        self.0.get_ref().sync_all()?;
         Ok(())
     }
 
