@@ -11,9 +11,9 @@ use opal::engine::KeyValueStore;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 
-const ITER: usize = 1000;
-const KEY_SIZE: usize = 512;
-const VAL_SIZE: usize = 1024;
+const ITER: usize = 10000;
+const KEY_SIZE: usize = 64;
+const VAL_SIZE: usize = 256;
 
 pub fn bench_write(c: &mut Criterion) {
     let kv_pairs = rand_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);

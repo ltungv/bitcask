@@ -10,9 +10,9 @@ use opal::engine::{self, KeyValueStore};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 
-const ITER: usize = 1000;
-const KEY_SIZE: usize = 512;
-const VAL_SIZE: usize = 1024;
+const ITER: usize = 10000;
+const KEY_SIZE: usize = 64;
+const VAL_SIZE: usize = 256;
 
 pub fn bench_write(c: &mut Criterion) {
     let kv_pairs = rand_kv_pairs(ITER, KEY_SIZE, VAL_SIZE);
@@ -21,7 +21,7 @@ pub fn bench_write(c: &mut Criterion) {
         nbytes += k.len() + v.len();
     }
 
-    let mut g = c.benchmark_group("bitcask_read");
+    let mut g = c.benchmark_group("bitcask_write");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
@@ -35,7 +35,7 @@ pub fn bench_write(c: &mut Criterion) {
     );
     g.finish();
 
-    let mut g = c.benchmark_group("sled_read");
+    let mut g = c.benchmark_group("sled_write");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
@@ -49,7 +49,7 @@ pub fn bench_write(c: &mut Criterion) {
     );
     g.finish();
 
-    let mut g = c.benchmark_group("dashmap_read");
+    let mut g = c.benchmark_group("dashmap_write");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
