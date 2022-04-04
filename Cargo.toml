@@ -33,12 +33,11 @@ rayon = "1"
 tempfile = "3"
 quickcheck = "1"
 
-[[bench]]
-name = "compare_engines_concurrent"
-harness = false
+[profile.release]
+debug = true
 
 [[bench]]
-name = "compare_engines_sequential"
+name = "compare_engines"
 harness = false
 
 [[bench]]
