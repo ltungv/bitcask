@@ -13,11 +13,8 @@ pub enum FrameError {
     #[error("Incomplete frame")]
     Incomplete,
 
-    #[error("Invalid frame type byte (got {0})")]
-    BadFrameTypeByte(u8),
-
-    #[error("Invalid ending bytes (got {0} and {1})")]
-    BadDelimiter(u8, u8),
+    #[error("Invalid frame format")]
+    BadFormat,
 
     #[error("Invalid length (got {0})")]
     BadLength(i64),
@@ -69,7 +66,7 @@ impl Frame {
             b':' => parse_integer(reader)?,
             b'$' => parse_bulk_string(reader)?,
             b'*' => parse_array(reader)?,
-            b => return Err(FrameError::BadFrameTypeByte(b)),
+            _ => return Err(FrameError::BadFormat),
         };
         Ok(frame)
     }
@@ -87,8 +84,11 @@ impl Frame {
                 get_integer(buf)?;
             }
             b'$' => {
-                let n = get_integer(buf)?;
-                if n >= 0 {
+                if peek_byte(buf)? == b'-' {
+                    // skip '-1\r\n'
+                    skip(buf, 4)?;
+                } else {
+                    let n = get_integer(buf)?;
                     let n: usize = n.try_into().map_err(|_| FrameError::BadLength(n))?;
                     // skip string length + 2 for "\r\n"
                     skip(buf, n + 2)?;
@@ -100,7 +100,7 @@ impl Frame {
                     Frame::check(buf)?;
                 }
             }
-            b => return Err(FrameError::BadFrameTypeByte(b)),
+            _ => return Err(FrameError::BadFormat),
         }
         Ok(())
     }
@@ -153,11 +153,15 @@ fn parse_integer(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
 }
 
 fn parse_bulk_string(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
-    let bulk_len = get_integer(reader)?;
-    if bulk_len == -1 {
+    if peek_byte(reader)? == b'-' {
+        let line = get_line(reader)?;
+        if line != b"-1" {
+            return Err(FrameError::BadFormat);
+        }
         return Ok(Frame::Null);
     }
 
+    let bulk_len = get_integer(reader)?;
     let bulk_len = bulk_len
         .try_into()
         .map_err(|_| FrameError::BadLength(bulk_len))?;
@@ -173,10 +177,6 @@ fn parse_bulk_string(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
 
 fn parse_array(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
     let array_len = get_integer(reader)?;
-    if array_len == -1 {
-        return Ok(Frame::Null);
-    }
-
     let array_len = array_len
         .try_into()
         .map_err(|_| FrameError::BadLength(array_len))?;
@@ -211,6 +211,13 @@ fn get_byte(buf: &mut Cursor<&[u8]>) -> Result<u8, FrameError> {
         return Err(FrameError::Incomplete);
     }
     Ok(buf.get_u8())
+}
+
+fn peek_byte(src: &Cursor<&[u8]>) -> Result<u8, FrameError> {
+    if !src.has_remaining() {
+        return Err(FrameError::Incomplete);
+    }
+    Ok(src.chunk()[0])
 }
 
 fn skip(src: &mut Cursor<&[u8]>, n: usize) -> Result<(), FrameError> {
@@ -301,7 +308,7 @@ mod tests {
         // extraneous '\r' and '\n' will not affect parsing
         assert_frame(
             b"$11\r\nhello\rworld\r\n",
-            Frame::BulkString("hello\nworld".into()),
+            Frame::BulkString("hello\rworld".into()),
         );
         assert_frame(
             b"$11\r\nhello\nworld\r\n",
@@ -321,7 +328,7 @@ mod tests {
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix() {
-        assert_frame_error(b"$-2\r\n", FrameError::BadLength(-2));
+        assert_frame_error(b"$-2\r\n", FrameError::BadFormat);
     }
 
     #[test]
@@ -394,7 +401,11 @@ mod tests {
     #[test]
     fn parse_null_valid() {
         assert_frame(b"$-1\r\n", Frame::Null);
-        assert_frame(b"*-1\r\n", Frame::Null);
+    }
+
+    #[test]
+    fn parse_null_invalid() {
+        assert_frame_error(b"*-1\r\n", FrameError::BadLength(-1));
     }
 
     fn assert_frame(input_data: &[u8], expected_frame: Frame) {
