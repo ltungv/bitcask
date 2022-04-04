@@ -21,40 +21,38 @@ pub fn bench_write(c: &mut Criterion) {
         nbytes += k.len() + v.len();
     }
 
-    let mut g = c.benchmark_group("compare_engines/bitcask_write");
+    let mut g = c.benchmark_group("compare_engines/concurrent_write");
     g.throughput(Throughput::Bytes(nbytes as u64));
+
     g.bench_with_input(
-        "concurrent",
+        "bitcask",
         &(&kv_pairs, engine::Type::BitCask),
         concurrent_write_bulk_bench,
     );
     g.bench_with_input(
-        "sequential",
-        &(&kv_pairs, engine::Type::BitCask),
-        sequential_write_bulk_bench,
-    );
-    g.finish();
-
-    let mut g = c.benchmark_group("compare_engines/sled_write");
-    g.throughput(Throughput::Bytes(nbytes as u64));
-    g.bench_with_input(
-        "concurrent",
+        "sled",
         &(&kv_pairs, engine::Type::Sled),
         concurrent_write_bulk_bench,
     );
     g.bench_with_input(
-        "sequential",
-        &(&kv_pairs, engine::Type::Sled),
-        sequential_write_bulk_bench,
-    );
-    g.finish();
-
-    let mut g = c.benchmark_group("compare_engines/dashmap_write");
-    g.throughput(Throughput::Bytes(nbytes as u64));
-    g.bench_with_input(
-        "concurrent",
+        "dashmap",
         &(&kv_pairs, engine::Type::DashMap),
         concurrent_write_bulk_bench,
+    );
+    g.finish();
+
+    let mut g = c.benchmark_group("compare_engines/sequential_write");
+    g.throughput(Throughput::Bytes(nbytes as u64));
+
+    g.bench_with_input(
+        "bitcask",
+        &(&kv_pairs, engine::Type::BitCask),
+        sequential_write_bulk_bench,
+    );
+    g.bench_with_input(
+        "sled",
+        &(&kv_pairs, engine::Type::Sled),
+        sequential_write_bulk_bench,
     );
     g.bench_with_input(
         "dashmap",
@@ -154,51 +152,49 @@ pub fn bench_read(c: &mut Criterion) {
         nbytes += k.len() + v.len();
     }
 
-    let mut g = c.benchmark_group("compare_engines/bitcask_read");
+    let mut g = c.benchmark_group("compare_engines/concurrent_read");
     g.throughput(Throughput::Bytes(nbytes as u64));
+
     g.bench_with_input(
-        "concurrent",
+        "bitcask",
         &(&kv_pairs, engine::Type::BitCask),
         concurrent_read_bulk_bench,
     );
-    {
-        let (engine, _tmpdir) = get_bitcask();
-        g.bench_with_input(
-            "sequential",
-            &(&kv_pairs, engine),
-            sequential_read_bulk_bench,
-        );
-    }
-    g.finish();
-
-    let mut g = c.benchmark_group("compare_engines/sled_read");
-    g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
-        "concurrent",
+        "sled",
         &(&kv_pairs, engine::Type::Sled),
         concurrent_read_bulk_bench,
     );
+    g.bench_with_input(
+        "dashmap",
+        &(&kv_pairs, engine::Type::DashMap),
+        concurrent_read_bulk_bench,
+    );
+    g.finish();
+
+    let mut g = c.benchmark_group("compare_engines/sequential_read");
+    g.throughput(Throughput::Bytes(nbytes as u64));
+
     {
-        let (engine, _tmpdir) = get_sled();
+        let (engine, _tmpdir) = get_bitcask();
         g.bench_with_input(
-            "sequential",
+            "bitcask",
             &(&kv_pairs, engine),
             sequential_read_bulk_bench,
         );
     }
-    g.finish();
-
-    let mut g = c.benchmark_group("compare_engines/dashmap_read");
-    g.throughput(Throughput::Bytes(nbytes as u64));
-    g.bench_with_input(
-        "concurrent",
-        &(&kv_pairs, engine::Type::DashMap),
-        concurrent_read_bulk_bench,
-    );
+    {
+        let (engine, _tmpdir) = get_sled();
+        g.bench_with_input(
+            "sled",
+            &(&kv_pairs, engine),
+            sequential_read_bulk_bench,
+        );
+    }
     {
         let (engine, _tmpdir) = get_dashmap();
         g.bench_with_input(
-            "sequential",
+            "dashmap",
             &(&kv_pairs, engine),
             sequential_read_bulk_bench,
         );
@@ -288,7 +284,7 @@ where
 
 criterion_group!(
     name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    config = Criterion::default().with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)));
     targets = bench_write, bench_read
 );
 criterion_main!(benches);
