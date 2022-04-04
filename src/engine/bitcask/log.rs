@@ -95,20 +95,18 @@ impl LogWriter {
         Ok(Self(writer))
     }
 
-    /// Serialize the given entry at EOF.
+    /// Serialize the given entry at EOF and ensure to flush all data to the I/O device.
     pub fn append<T>(&mut self, entry: &T) -> bincode::Result<LogIndex>
     where
         T: Serialize,
     {
         let pos = self.0.pos();
+
         bincode::serialize_into(&mut self.0, entry)?;
+        self.0.flush()?;
+
         let len = self.0.pos() - pos;
         Ok(LogIndex { len, pos })
-    }
-
-    /// Flush the writer buffered data to the I/O device.
-    pub fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
     }
 
     /// Synchronize the writer state with the file system and ensure all data is physically written.
@@ -211,7 +209,6 @@ mod tests {
             let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
-            writer.flush().unwrap();
             // succeed if we received the correct index
             idx1.pos == 0 && idx1.len == idx2.pos && idx1.len == idx2.len
         }
@@ -225,7 +222,6 @@ mod tests {
             let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
-            writer.flush().unwrap();
             // read the entry
             let reader = LogReader::new(open(&fpath).unwrap());
             let buf1 = unsafe { reader.at::<Vec<u8>>(idx1.len, idx1.pos).unwrap() };
@@ -242,7 +238,6 @@ mod tests {
             // write the entries
             let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
             let indices: Vec<LogIndex> = entries.iter().map(|buf| writer.append(&buf).unwrap()).collect();
-            writer.flush().unwrap();
             // read the entries
             let reader = LogReader::new(open(&fpath).unwrap());
             let mut iter = LogIterator::new(open(&fpath).unwrap()).unwrap();
