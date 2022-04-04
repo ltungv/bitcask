@@ -37,6 +37,19 @@ where
 pub struct LogDir(BTreeMap<u64, LogReader>);
 
 impl LogDir {
+    /// Deserialize a data entry given the directory path and the file position
+    pub fn read<P, T>(&mut self, path: P, fileid: u64, len: u64, pos: u64) -> bincode::Result<T>
+    where
+        T: DeserializeOwned,
+        P: AsRef<Path>,
+    {
+        // NOTE: Unsafe usage.
+        // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+        // thus the readers can safely use memmap to access the data file randomly.
+        let prev_datafile_entry = unsafe { self.get(path, fileid)?.at::<T>(len, pos)? };
+        Ok(prev_datafile_entry)
+    }
+
     /// Return the reader of the file with the given `fileid`. If there's no reader for the file
     /// with the given `fileid`, create a new reader and return it.
     pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&LogReader>
