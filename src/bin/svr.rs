@@ -1,6 +1,6 @@
 use std::{env, fs, net::IpAddr, path};
 
-use structopt::StructOpt;
+use clap::Parser;
 use tokio::net::TcpListener;
 use tokio::signal;
 
@@ -16,26 +16,26 @@ pub async fn main() -> Result<(), anyhow::Error> {
     let subscriber = get_subscriber("opald".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);
 
-    let cli = Cli::from_args();
+    let args = Args::parse();
 
     // Bind a TCP listener
-    let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
+    let listener = TcpListener::bind(&format!("{}:{}", args.host, args.port)).await?;
 
-    match cli.typ {
+    match args.typ {
         engine::Type::BitCask => {
-            let db_dir = cli.path.unwrap_or(env::current_dir()?);
+            let db_dir = args.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
             let storage = BitCaskKeyValueStore::from(
                 BitCaskConfig::default()
-                    .concurrency(cli.nthreads)
+                    .concurrency(args.nthreads)
                     .open(db_dir)?,
             );
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }
         engine::Type::Sled => {
-            let db_dir = cli.path.unwrap_or(env::current_dir()?);
+            let db_dir = args.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
             let db = sled::Config::default().path(db_dir).open()?;
@@ -53,37 +53,27 @@ pub async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "opal", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "A key value store server")]
-struct Cli {
-    #[structopt(
-        long = "host",
-        about = "Host address of the Redis server",
-        default_value = "127.0.0.1"
-    )]
+/// A minimal Redis server
+#[derive(Parser, Debug)]
+#[clap(name = "opal", version, author, long_about = None)]
+struct Args {
+    /// The host address of the server
+    #[clap(long, default_value = "127.0.0.1")]
     host: IpAddr,
 
-    #[structopt(
-        long = "port",
-        about = "Port address of the Redis server",
-        default_value = "6379"
-    )]
+    /// The port number of the server
+    #[clap(long, default_value = "6379")]
     port: u16,
 
-    #[structopt(
-        long = "type",
-        about = "The engine used by the key-value store",
-        default_value = "bitcask"
-    )]
+    /// The key-value store engine used by the server
+    #[clap(long = "type", default_value = "bitcask")]
     typ: engine::Type,
 
-    #[structopt(long = "path", about = "Path to the directory containing the data")]
+    /// Path to the database directory
+    #[clap(long)]
     path: Option<path::PathBuf>,
 
-    #[structopt(
-        long = "nthreads",
-        about = "Number of threads used to run the key-value store",
-        default_value = "4"
-    )]
+    /// Number of threads used for parallelization
+    #[clap(long, default_value = "4")]
     nthreads: usize,
 }

@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use structopt::StructOpt;
+use clap::{Parser, Subcommand};
 
 use opal::{
     net::Client,
@@ -13,10 +13,10 @@ async fn main() -> Result<(), anyhow::Error> {
     let subscriber = get_subscriber("opal".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);
 
-    let cli = Cli::from_args();
+    let args = Args::parse();
 
-    let mut client = Client::connect(format!("{}:{}", cli.host, cli.port)).await?;
-    match cli.cmd {
+    let mut client = Client::connect(format!("{}:{}", args.host, args.port)).await?;
+    match args.cmd {
         Command::Set { key, value } => {
             client.set(&key, value.into()).await?;
             println!("\"OK\"");
@@ -37,46 +37,41 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[derive(StructOpt)]
-#[structopt(name = "opal", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "A key value store client")]
-struct Cli {
-    #[structopt(subcommand)]
+/// A minimal Redis client
+#[derive(Parser)]
+#[clap(name = "opal", version, author, long_about = None)]
+struct Args {
+    #[clap(subcommand)]
     cmd: Command,
 
-    #[structopt(
-        long = "host",
-        about = "Host address of the Redis server",
-        default_value = "127.0.0.1"
-    )]
+    /// The host address of the server
+    #[clap(long, default_value = "127.0.0.1")]
     host: Ipv4Addr,
 
-    #[structopt(
-        long = "port",
-        about = "Port address of the Redis server",
-        default_value = "6379"
-    )]
+    /// The port number of the server
+    #[clap(long, default_value = "6379")]
     port: u16,
 }
 
-#[derive(StructOpt)]
+#[derive(Subcommand)]
 enum Command {
-    #[structopt(about = "Set the value of the key")]
+    /// Set key's value
     Set {
-        #[structopt(name = "KEY")]
+        #[clap(name = "KEY")]
         key: String,
-        #[structopt(name = "VALUE")]
+        #[clap(name = "VALUE")]
         value: String,
     },
 
-    #[structopt(about = "Get the value of the key")]
+    /// Get key's value
     Get {
-        #[structopt(name = "KEY")]
+        #[clap(name = "KEY")]
         key: String,
     },
 
-    #[structopt(about = "Delete the keys")]
+    /// Delete keys
     Del {
-        #[structopt(name = "KEY")]
+        #[clap(name = "KEY")]
         keys: Vec<String>,
     },
 }
