@@ -114,7 +114,7 @@ impl From<Del> for Frame {
     fn from(cmd: Del) -> Self {
         let mut cmd_data = vec![Self::BulkString("DEL".into())];
         for key in cmd.keys() {
-            cmd_data.push(Self::BulkString(Bytes::copy_from_slice(key.as_bytes())));
+            cmd_data.push(Self::BulkString(Bytes::copy_from_slice(key)));
         }
         Self::Array(cmd_data)
     }
@@ -124,7 +124,7 @@ impl From<Get> for Frame {
     fn from(cmd: Get) -> Self {
         Self::Array(vec![
             Self::BulkString("GET".into()),
-            Self::BulkString(Bytes::copy_from_slice(cmd.key().as_bytes())),
+            Self::BulkString(Bytes::copy_from_slice(cmd.key())),
         ])
     }
 }
@@ -133,7 +133,7 @@ impl From<Set> for Frame {
     fn from(cmd: Set) -> Self {
         Self::Array(vec![
             Self::BulkString("SET".into()),
-            Self::BulkString(Bytes::copy_from_slice(cmd.key().as_bytes())),
+            Self::BulkString(Bytes::copy_from_slice(cmd.key())),
             Self::BulkString(Bytes::copy_from_slice(cmd.value())),
         ])
     }

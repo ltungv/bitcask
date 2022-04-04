@@ -11,7 +11,7 @@ mod utils;
 use std::{
     cell::RefCell,
     fs,
-    io::{self, Write},
+    io::{self, BufWriter},
     path::{self, Path},
     sync::{atomic, Arc, Mutex},
 };
@@ -24,7 +24,7 @@ use thiserror::Error;
 use tracing::{debug, error};
 
 use super::KeyValueStore;
-use log::{LogDir, LogIndex, LogReader, LogWriter};
+use log::{LogDir, LogIndex, LogIterator, LogWriter};
 
 /// A wrapper around [`BitCask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
@@ -33,16 +33,16 @@ pub struct BitCaskKeyValueStore(pub BitCask);
 impl KeyValueStore for BitCaskKeyValueStore {
     type Error = BitCaskError;
 
-    fn set(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.0.put(key, value).map(|v| v.map(|v| v.to_vec()))
+    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.0.put(key, value)
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.0.get(key).map(|v| v.map(|v| v.to_vec()))
+    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.0.get(key)
     }
 
-    fn del(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.0.delete(key).map(|v| v.map(|v| v.to_vec()))
+    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.0.delete(key)
     }
 }
 
@@ -140,7 +140,7 @@ impl BitCask {
                 .expect("unreachable error");
         }
 
-        let writer = LogWriter::create(path.as_ref().join(utils::datafile_name(active_fileid)))?;
+        let writer = LogWriter::new(log::create(utils::datafile_name(&path, active_fileid))?)?;
         let writer = Arc::new(Mutex::new(BitCaskWriter {
             ctx,
             readers: Default::default(),
@@ -153,7 +153,7 @@ impl BitCask {
         Ok(BitCask { writer, readers })
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
+    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
         let backoff = Backoff::new();
         loop {
             if let Some(reader) = self.readers.pop() {
@@ -168,11 +168,11 @@ impl BitCask {
         }
     }
 
-    fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
+    fn put(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
         self.writer.lock().unwrap().put(key, value)
     }
 
-    fn delete(&self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
+    fn delete(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
         self.writer.lock().unwrap().delete(key)
     }
 
@@ -234,9 +234,9 @@ impl BitCaskWriter {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
+    fn put(&mut self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
         let tstamp = utils::timestamp();
-        let index = self.put_data(tstamp, key, value)?;
+        let index = self.put_data(tstamp, &key, &value)?;
 
         let keydir_entry = KeyDirEntry {
             fileid: self.active_fileid,
@@ -245,11 +245,7 @@ impl BitCaskWriter {
             tstamp,
         };
 
-        match self
-            .ctx
-            .keydir
-            .insert(Bytes::copy_from_slice(key), keydir_entry)
-        {
+        match self.ctx.keydir.insert(key, keydir_entry) {
             Some(prev_keydir_entry) => {
                 // NOTE: Unsafe usage.
                 // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
@@ -275,7 +271,7 @@ impl BitCaskWriter {
     ///
     /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn delete(&mut self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
+    fn delete(&mut self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
         match self.ctx.keydir.remove(key) {
             Some((_, prev_keydir_entry)) => {
                 // NOTE: Unsafe usage.
@@ -304,10 +300,14 @@ impl BitCaskWriter {
         // flushed automatically at the end of scope.
         {
             let mut merge_pos = 0;
-            let mut merge_datafile_writer =
-                LogWriter::create(self.ctx.path.join(utils::datafile_name(merge_fileid)))?;
-            let mut merge_hintfile_writer =
-                LogWriter::create(self.ctx.path.join(utils::hintfile_name(merge_fileid)))?;
+            let mut merge_datafile_writer = BufWriter::new(log::create(utils::datafile_name(
+                &self.ctx.path,
+                merge_fileid,
+            ))?);
+            let mut merge_hintfile_writer = LogWriter::new(log::create(utils::hintfile_name(
+                &self.ctx.path,
+                merge_fileid,
+            ))?)?;
 
             let mut readers = self.readers.borrow_mut();
             for mut keydir_entry in self.ctx.keydir.iter_mut() {
@@ -345,14 +345,15 @@ impl BitCaskWriter {
         // Remove stale files from system
         let stale_fileids = utils::sorted_fileids(&self.ctx.path)?.filter(|&id| id < merge_fileid);
         for id in stale_fileids {
-            let hintfile_path = self.ctx.path.join(utils::hintfile_name(id));
-            let datafile_path = self.ctx.path.join(utils::datafile_name(id));
-
-            if hintfile_path.exists() {
-                fs::remove_file(hintfile_path)?;
+            if let Err(e) = fs::remove_file(utils::hintfile_name(&self.ctx.path, id)) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    return Err(e.into());
+                }
             }
-            if datafile_path.exists() {
-                fs::remove_file(datafile_path)?;
+            if let Err(e) = fs::remove_file(utils::datafile_name(&self.ctx.path, id)) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    return Err(e.into());
+                }
             }
         }
 
@@ -365,13 +366,13 @@ impl BitCaskWriter {
     fn put_data(
         &mut self,
         tstamp: u128,
-        key: &[u8],
-        value: &[u8],
+        key: &Bytes,
+        value: &Bytes,
     ) -> Result<LogIndex, BitCaskError> {
         let entry = DataFileEntry {
             tstamp,
-            key: Bytes::copy_from_slice(key),
-            value: Some(Bytes::copy_from_slice(value)),
+            key: key.clone(),
+            value: Some(value.clone()),
         };
 
         let index = self.writer.append(&entry)?;
@@ -381,10 +382,10 @@ impl BitCaskWriter {
     }
 
     /// Apppend a tomestone entry to the active data file.
-    fn put_tombstone(&mut self, tstamp: u128, key: &[u8]) -> Result<(), BitCaskError> {
+    fn put_tombstone(&mut self, tstamp: u128, key: &Bytes) -> Result<(), BitCaskError> {
         let entry = DataFileEntry {
             tstamp,
-            key: Bytes::copy_from_slice(key),
+            key: key.clone(),
             value: None,
         };
 
@@ -398,8 +399,10 @@ impl BitCaskWriter {
     /// Updates the active file ID and open a new data file with the new active ID.
     fn new_active_datafile(&mut self, fileid: u64) -> Result<(), BitCaskError> {
         self.active_fileid = fileid;
-        self.writer =
-            LogWriter::create(self.ctx.path.join(utils::datafile_name(self.active_fileid)))?;
+        self.writer = LogWriter::new(log::create(utils::datafile_name(
+            &self.ctx.path,
+            self.active_fileid,
+        ))?)?;
         self.written = 0;
         Ok(())
     }
@@ -438,7 +441,7 @@ struct BitCaskReader {
 }
 
 impl BitCaskReader {
-    fn get(&self, key: &[u8]) -> Result<Option<Bytes>, BitCaskError> {
+    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
         match self.ctx.keydir.get(key) {
             None => Ok(None),
             Some(index) => {
@@ -480,14 +483,18 @@ where
         if fileid > active_fileid {
             active_fileid = fileid;
         }
-
-        let hintfile_path = path.as_ref().join(utils::hintfile_name(fileid));
-        // use the hint file if it exists cause it has less data to be read.
-        if hintfile_path.exists() {
-            populate_keydir_with_hintfile(&keydir, fileid, hintfile_path)?;
-        } else {
-            let datafile_path = path.as_ref().join(utils::datafile_name(fileid));
-            garbage += populate_keydir_with_datafile(&keydir, fileid, datafile_path)?;
+        match log::open(utils::hintfile_name(&path, fileid)) {
+            Ok(f) => populate_keydir_with_hintfile(&keydir, f, fileid)?,
+            Err(e) => match e.kind() {
+                io::ErrorKind::NotFound => {
+                    garbage += populate_keydir_with_datafile(
+                        &keydir,
+                        log::open(utils::datafile_name(&path, fileid))?,
+                        fileid,
+                    )?;
+                }
+                _ => return Err(e.into()),
+            },
         }
     }
 
@@ -498,16 +505,13 @@ where
     Ok((keydir, active_fileid, garbage))
 }
 
-fn populate_keydir_with_hintfile<P>(
+fn populate_keydir_with_hintfile(
     keydir: &KeyDir,
+    file: fs::File,
     fileid: u64,
-    path: P,
-) -> Result<(), BitCaskError>
-where
-    P: AsRef<Path>,
-{
-    let mut hintfile_reader = LogReader::open(path)?;
-    while let Some((_, entry)) = hintfile_reader.next::<HintFileEntry>()? {
+) -> Result<(), BitCaskError> {
+    let mut hintfile_iter = LogIterator::new(file)?;
+    while let Some((_, entry)) = hintfile_iter.next::<HintFileEntry>()? {
         // Indices given by the hint file do not point to tombstones.
         keydir.insert(
             entry.key,
@@ -522,17 +526,14 @@ where
     Ok(())
 }
 
-fn populate_keydir_with_datafile<P>(
+fn populate_keydir_with_datafile(
     keydir: &KeyDir,
+    file: fs::File,
     fileid: u64,
-    path: P,
-) -> Result<u64, BitCaskError>
-where
-    P: AsRef<Path>,
-{
+) -> Result<u64, BitCaskError> {
     let mut garbage = 0;
-    let mut datafile_reader = LogReader::open(path)?;
-    while let Some((datafile_index, datafile_entry)) = datafile_reader.next::<DataFileEntry>()? {
+    let mut datafile_iter = LogIterator::new(file)?;
+    while let Some((datafile_index, datafile_entry)) = datafile_iter.next::<DataFileEntry>()? {
         match datafile_entry.value {
             None => garbage += datafile_index.len,
             Some(_) => {

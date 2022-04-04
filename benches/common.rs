@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use criterion::black_box;
 use opal::engine::{
     BitCaskConfig, BitCaskKeyValueStore, DashMapKeyValueStore, KeyValueStore, SledKeyValueStore,
@@ -7,12 +8,12 @@ use rand::{
     prelude::*,
 };
 use rayon::{
-    iter::{IntoParallelRefIterator, ParallelIterator},
+    iter::{ParallelIterator, IntoParallelIterator},
     ThreadPool, ThreadPoolBuilder,
 };
 use tempfile::TempDir;
 
-pub type KeyValuePair = (Vec<u8>, Vec<u8>);
+pub type KeyValuePair = (Bytes, Bytes);
 
 pub fn concurrent_write_bulk_bench_iter<E>(
     (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
@@ -26,7 +27,7 @@ pub fn concurrent_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Ve
 where
     E: KeyValueStore,
 {
-    kv_pairs.par_iter().for_each_with(engine, |engine, (k, v)| {
+    kv_pairs.into_par_iter().for_each_with(engine, |engine, (k, v)| {
         engine.set(black_box(k), black_box(v)).unwrap();
     });
 }
@@ -35,8 +36,8 @@ pub fn concurrent_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePa
 where
     E: KeyValueStore,
 {
-    kv_pairs.par_iter().for_each_with(engine, |engine, (k, _)| {
-        engine.get(black_box(k)).unwrap();
+    kv_pairs.into_par_iter().for_each_with(engine, |engine, (k, _)| {
+        engine.get(black_box(&k)).unwrap();
     });
 }
 
@@ -52,7 +53,7 @@ pub fn sequential_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Ve
 where
     E: KeyValueStore,
 {
-    kv_pairs.iter().for_each(|(k, v)| {
+    kv_pairs.into_iter().for_each(|(k, v)| {
         engine.set(black_box(k), black_box(v)).unwrap();
     });
 }
@@ -61,8 +62,8 @@ pub fn sequential_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePa
 where
     E: KeyValueStore,
 {
-    kv_pairs.iter().for_each(|(k, _)| {
-        engine.get(black_box(k)).unwrap();
+    kv_pairs.into_iter().for_each(|(k, _)| {
+        engine.get(black_box(&k)).unwrap();
     });
 }
 
@@ -110,7 +111,7 @@ pub fn rand_kv_pair<R>(rng: &mut R, key_size: usize, val_size: usize) -> KeyValu
 where
     R: Rng,
 {
-    let key: Vec<u8> = rng.sample_iter(Standard).take(key_size).collect();
-    let val: Vec<u8> = rng.sample_iter(Standard).take(val_size).collect();
+    let key: Bytes = rng.sample_iter(Standard).take(key_size).collect();
+    let val: Bytes = rng.sample_iter(Standard).take(val_size).collect();
     (key, val)
 }

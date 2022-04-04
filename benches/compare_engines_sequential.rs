@@ -113,7 +113,7 @@ where
     E: KeyValueStore,
 {
     kv_pairs.iter().cloned().for_each(|(k, v)| {
-        engine.set(&k, &v).unwrap();
+        engine.set(k, v).unwrap();
     });
 
     b.iter_batched(

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use dashmap::DashMap;
 use thiserror::Error;
 
@@ -8,7 +9,7 @@ use super::KeyValueStore;
 /// A type alias for a our database type
 #[derive(Default)]
 pub struct DashMapKeyValueStore {
-    inner: Arc<DashMap<Vec<u8>, Vec<u8>>>,
+    inner: Arc<DashMap<Bytes, Bytes>>,
 }
 
 #[derive(Error, Debug)]
@@ -20,19 +21,19 @@ impl KeyValueStore for DashMapKeyValueStore {
 
     /// Delete a key from the store. Returns the value of the removed
     /// key, if there's any
-    fn del(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
         Ok(self.inner.remove(key).map(|(_, v)| v))
     }
 
     /// Get the value of a key from the store.
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
         Ok(self.inner.get(key).map(|e| e.value().clone()))
     }
 
     /// Sets the value to a key. Returns the previous value of the key,
     /// if there's any.
-    fn set(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        Ok(self.inner.insert(key.to_vec(), value.to_vec()))
+    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        Ok(self.inner.insert(key, value))
     }
 }
 

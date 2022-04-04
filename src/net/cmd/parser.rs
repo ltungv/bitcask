@@ -27,7 +27,7 @@ pub enum CommandParseError {
     NotInteger(Vec<u8>),
 
     #[error("Invalid UTF-8 string - {0}")]
-    NotUtf8(#[from] std::string::FromUtf8Error),
+    NotUtf8(#[from] std::str::Utf8Error),
 }
 
 /// A parser that extracts values contained within a command frame
@@ -62,7 +62,7 @@ impl CommandParser {
     fn parse_del(&mut self) -> Result<Del, CommandParseError> {
         let mut keys = Vec::new();
         while let Some(key) = self.get_string()? {
-            keys.push(key);
+            keys.push(Bytes::copy_from_slice(&key));
         }
         if keys.is_empty() {
             return Err(CommandParseError::NoKey);
@@ -72,6 +72,7 @@ impl CommandParser {
 
     fn parse_get(&mut self) -> Result<Get, CommandParseError> {
         let key = self.get_string()?.ok_or(CommandParseError::NoKey)?;
+        let key = Bytes::copy_from_slice(&key);
         if !self.finish() {
             return Err(CommandParseError::FoundUnconsumedData);
         }
@@ -80,6 +81,7 @@ impl CommandParser {
 
     fn parse_set(&mut self) -> Result<Set, CommandParseError> {
         let key = self.get_string()?.ok_or(CommandParseError::NoKey)?;
+        let key = Bytes::copy_from_slice(&key);
         let value = self.get_bytes()?.ok_or(CommandParseError::NoValue)?;
         if !self.finish() {
             return Err(CommandParseError::FoundUnconsumedData);
@@ -91,9 +93,12 @@ impl CommandParser {
     ///
     /// Returns a string if the next value can be represented as string.
     /// Otherwise returns an error. Returns `None` if there's no value left.
-    fn get_string(&mut self) -> Result<Option<String>, CommandParseError> {
+    fn get_string(&mut self) -> Result<Option<Bytes>, CommandParseError> {
         match self.frames.next() {
-            Some(Frame::BulkString(s)) => Ok(Some(String::from_utf8(Vec::from(&s[..]))?)),
+            Some(Frame::BulkString(s)) => {
+                std::str::from_utf8(&s[..])?;
+                Ok(Some(s))
+            }
             Some(f) => Err(CommandParseError::BadFrame(f)),
             None => Ok(None),
         }

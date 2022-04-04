@@ -1,3 +1,6 @@
+use bytes::Bytes;
+use sled::IVec;
+
 use crate::engine::KeyValueStore;
 
 /// A key-value store that uses sled as the underlying data storage engine
@@ -16,15 +19,19 @@ impl SledKeyValueStore {
 impl KeyValueStore for SledKeyValueStore {
     type Error = sled::Error;
 
-    fn set(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.db.insert(key, value).map(|v| v.map(|v| v.to_vec()))
+    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.db
+            .insert(IVec::from(key.as_ref()), IVec::from(value.as_ref()))
+            .map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.db.get(key).map(|v| v.map(|v| v.to_vec()))
+    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.db.get(key).map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
     }
 
-    fn del(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.db.remove(key).map(|v| v.map(|v| v.to_vec()))
+    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.db
+            .remove(key)
+            .map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
     }
 }

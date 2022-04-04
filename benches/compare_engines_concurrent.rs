@@ -124,7 +124,7 @@ fn concurrent_read_bulk_bench(
         engine::Type::BitCask => {
             let (engine, _tmpdir) = get_bitcask();
             kv_pairs.iter().for_each(|(k, v)| {
-                engine.set(k, v).unwrap();
+                engine.set(k.clone(), v.clone()).unwrap();
             });
             pool.install(move || {
                 b.iter_batched(
@@ -140,7 +140,7 @@ fn concurrent_read_bulk_bench(
         }
         engine::Type::Sled => {
             let (engine, _tmpdir) = get_sled();
-            kv_pairs.iter().for_each(|(k, v)| {
+            kv_pairs.iter().cloned().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();
             });
             pool.install(move || {
@@ -157,7 +157,7 @@ fn concurrent_read_bulk_bench(
         }
         engine::Type::DashMap => {
             let (engine, _tmpdir) = get_dashmap();
-            kv_pairs.iter().for_each(|(k, v)| {
+            kv_pairs.iter().cloned().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();
             });
             pool.install(move || {

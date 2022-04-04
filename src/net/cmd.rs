@@ -74,7 +74,7 @@ impl TryFrom<Frame> for Command {
 /// Arguments for DEL command
 #[derive(Debug)]
 pub struct Del {
-    keys: Vec<String>,
+    keys: Vec<Bytes>,
 }
 
 impl Del {
@@ -83,15 +83,18 @@ impl Del {
     /// DEL requires that the list of keys must have at least 1 element
     pub fn new<S>(keys: &[S]) -> Self
     where
-        S: ToString,
+        S: AsRef<str>,
     {
         Self {
-            keys: keys.iter().map(|k| k.to_string()).collect(),
+            keys: keys
+                .iter()
+                .map(|k| Bytes::copy_from_slice(k.as_ref().as_bytes()))
+                .collect(),
         }
     }
 
     /// Get the assigned keys
-    pub fn keys(&self) -> std::slice::Iter<'_, String> {
+    pub fn keys(&self) -> std::slice::Iter<'_, Bytes> {
         self.keys.iter()
     }
 
@@ -111,7 +114,7 @@ impl Del {
         let count = tokio::task::spawn_blocking(move || {
             let mut count = 0;
             for key in &self.keys {
-                match storage.del(key.as_bytes()) {
+                match storage.del(key) {
                     Ok(Some(_)) => count += 1,
                     Ok(None) => continue,
                     Err(e) => return Err(e),
@@ -135,21 +138,21 @@ impl Del {
 /// Arguments for for GET command
 #[derive(Debug)]
 pub struct Get {
-    key: String,
+    key: Bytes,
 }
 
 impl Get {
     /// Creates a new set of arguments
     pub fn new<S>(key: S) -> Self
     where
-        S: ToString,
+        S: AsRef<str>,
     {
         Self {
-            key: key.to_string(),
+            key: Bytes::copy_from_slice(key.as_ref().as_bytes()),
         }
     }
 
-    pub fn key(&self) -> &str {
+    pub fn key(&self) -> &[u8] {
         &self.key
     }
 
@@ -166,13 +169,13 @@ impl Get {
         KV: KeyValueStore,
     {
         // Get the key's value
-        let result = tokio::task::spawn_blocking(move || storage.get(self.key.as_bytes()))
+        let result = tokio::task::spawn_blocking(move || storage.get(&self.key))
             .await?
             .map_err(|e| CommandApplyError::KeyValueStore(e.into()))?;
 
         // Responding with the received value
         let response = match result {
-            Some(val) => Frame::BulkString(Bytes::from(val)),
+            Some(val) => Frame::BulkString(val),
             None => Frame::Null,
         };
         debug!(?response);
@@ -187,7 +190,7 @@ impl Get {
 #[derive(Debug)]
 pub struct Set {
     /// The key to set a value to
-    key: String,
+    key: Bytes,
     /// The value to be set
     value: Bytes,
 }
@@ -196,15 +199,15 @@ impl Set {
     /// Creates a new set of arguments
     pub fn new<S>(key: S, value: Bytes) -> Self
     where
-        S: ToString,
+        S: AsRef<str>,
     {
         Self {
-            key: key.to_string(),
+            key: Bytes::copy_from_slice(key.as_ref().as_bytes()),
             value,
         }
     }
 
-    pub fn key(&self) -> &str {
+    pub fn key(&self) -> &[u8] {
         &self.key
     }
 
@@ -225,7 +228,7 @@ impl Set {
         KV: KeyValueStore,
     {
         // Set the key's value
-        tokio::task::spawn_blocking(move || storage.set(self.key.as_bytes(), &self.value))
+        tokio::task::spawn_blocking(move || storage.set(self.key, self.value))
             .await?
             .map_err(|e| CommandApplyError::KeyValueStore(e.into()))?;
 

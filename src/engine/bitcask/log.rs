@@ -13,6 +13,25 @@ use super::{
     utils,
 };
 
+/// Create a new data file for writing entries to.
+pub fn create<P>(path: P) -> io::Result<fs::File>
+where
+    P: AsRef<Path>,
+{
+    fs::OpenOptions::new()
+        .append(true)
+        .create_new(true)
+        .open(path)
+}
+
+/// Open a data file for reading entries from.
+pub fn open<P>(path: P) -> io::Result<fs::File>
+where
+    P: AsRef<Path>,
+{
+    fs::OpenOptions::new().read(true).open(path)
+}
+
 /// A mapping of log file IDs to log file readers.
 #[derive(Debug, Default)]
 pub struct LogDir(BTreeMap<u64, LogReader>);
@@ -20,13 +39,14 @@ pub struct LogDir(BTreeMap<u64, LogReader>);
 impl LogDir {
     /// Return the reader of the file with the given `fileid`. If there's no reader for the file
     /// with the given `fileid`, create a new reader and return it.
-    pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&mut LogReader>
+    pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&LogReader>
     where
         P: AsRef<Path>,
     {
-        let reader = self.0.entry(fileid).or_insert(LogReader::open(
-            path.as_ref().join(utils::datafile_name(fileid)),
-        )?);
+        let reader = self
+            .0
+            .entry(fileid)
+            .or_insert(LogReader::new(open(utils::datafile_name(&path, fileid))?));
         Ok(reader)
     }
 
@@ -59,15 +79,8 @@ pub struct LogIndex {
 pub struct LogWriter(BufWriterWithPos<fs::File>);
 
 impl LogWriter {
-    /// Create a new data file for writing entries to.
-    pub fn create<P>(path: P) -> io::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let file = fs::OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(path)?;
+    /// Create a new log writer for writing entries to the given file.
+    pub fn new(file: fs::File) -> io::Result<Self> {
         let writer = BufWriterWithPos::new(file)?;
         Ok(Self(writer))
     }
@@ -83,36 +96,71 @@ impl LogWriter {
         Ok(LogIndex { len, pos })
     }
 
-    /// Synchronize the writer state with the file system and ensure all data is physically written.
-    pub fn sync_all(&mut self) -> io::Result<()> {
-        self.0.get_ref().sync_all()?;
-        Ok(())
-    }
-}
-
-impl Write for LogWriter {
-    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        self.0.write(b)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
+    /// Flush the writer buffered data to the I/O device.
+    pub fn flush(&mut self) -> io::Result<()> {
         self.0.flush()
     }
+
+    /// Synchronize the writer state with the file system and ensure all data is physically written.
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        self.0.get_ref().sync_all()
+    }
 }
 
-/// A file reader that deserializes data using `bincode`.
+/// A random-access file reader that deserializes data using `bincode`.
 #[derive(Debug)]
-pub struct LogReader(BufReaderWithPos<fs::File>);
+pub struct LogReader(fs::File);
 
 impl LogReader {
-    /// Create a new iterator over the data file at the given `path`.
-    pub fn open<P>(path: P) -> io::Result<Self>
+    /// Create a new log reader for reading entries from the given file.
+    pub fn new(file: fs::File) -> Self {
+        Self(file)
+    }
+
+    /// Return the entry at the given position by mapping the file segment directly into memory.
+    ///
+    /// # Unsafe
+    ///
+    /// The caller must ensure that the file segment given by `len` and `pos` is valid.
+    pub unsafe fn at<T>(&self, len: u64, pos: u64) -> bincode::Result<T>
     where
-        P: AsRef<Path>,
+        T: DeserializeOwned,
     {
-        let file = fs::OpenOptions::new().read(true).open(path)?;
-        let buf_reader = BufReaderWithPos::new(file)?;
-        Ok(Self(buf_reader))
+        let mmap = memmap2::MmapOptions::new()
+            .offset(pos)
+            .len(len as usize)
+            // NOTE: we convert an io::Error into bincode::Error which might be undesirable
+            .map(&self.0)?;
+        bincode::deserialize(&mmap)
+    }
+
+    /// Copy the raw data at the given position into the writer at `dst` by mapping the file segment
+    /// directly into memory.
+    ///
+    /// # Unsafe
+    ///
+    /// The caller must ensure that the file segment given by `len` and `pos` is valid.
+    pub unsafe fn copy_raw<W>(&self, len: u64, pos: u64, dst: &mut W) -> io::Result<u64>
+    where
+        W: Write,
+    {
+        let mmap = memmap2::MmapOptions::new()
+            .offset(pos)
+            .len(len as usize)
+            .map(&self.0)?;
+        io::copy(&mut mmap.reader(), dst)
+    }
+}
+
+/// A sequential-access file reader that deserializes data using `bincode`.
+#[derive(Debug)]
+pub struct LogIterator(BufReaderWithPos<fs::File>);
+
+impl LogIterator {
+    /// Create a new log iterator for iterating through entries from the given file.
+    pub fn new(file: fs::File) -> io::Result<Self> {
+        let reader = BufReaderWithPos::new(file)?;
+        Ok(Self(reader))
     }
 
     /// Return the entry at the current reader position.
@@ -137,40 +185,6 @@ impl LogReader {
             },
         }
     }
-
-    /// Return the entry at the given position by mapping the file segment directly into memory.
-    ///
-    /// # Unsafe
-    ///
-    /// The caller must ensure that the file segment given by `len` and `pos` is valid.
-    pub unsafe fn at<T>(&mut self, len: u64, pos: u64) -> bincode::Result<T>
-    where
-        T: DeserializeOwned,
-    {
-        let mmap = memmap2::MmapOptions::new()
-            .offset(pos)
-            .len(len as usize)
-            // NOTE: we convert an io::Error into bincode::Error which might be undesirable
-            .map(self.0.get_ref())?;
-        bincode::deserialize(&mmap)
-    }
-
-    /// Copy the raw data at the given position into the writer at `dst` by mapping the file segment
-    /// directly into memory.
-    ///
-    /// # Unsafe
-    ///
-    /// The caller must ensure that the file segment given by `len` and `pos` is valid.
-    pub unsafe fn copy_raw<W>(&mut self, len: u64, pos: u64, dst: &mut W) -> io::Result<u64>
-    where
-        W: Write,
-    {
-        let mmap = memmap2::MmapOptions::new()
-            .offset(pos)
-            .len(len as usize)
-            .map(self.0.get_ref())?;
-        io::copy(&mut mmap.reader(), dst)
-    }
 }
 
 #[cfg(test)]
@@ -184,7 +198,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             // write the entry
-            let mut writer = LogWriter::create(&fpath).unwrap();
+            let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
             writer.flush().unwrap();
@@ -198,12 +212,12 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             // write the entry
-            let mut writer = LogWriter::create(&fpath).unwrap();
+            let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
             writer.flush().unwrap();
             // read the entry
-            let mut reader = LogReader::open(&fpath).unwrap();
+            let reader = LogReader::new(open(&fpath).unwrap());
             let buf1 = unsafe { reader.at::<Vec<u8>>(idx1.len, idx1.pos).unwrap() };
             let buf2 = unsafe { reader.at::<Vec<u8>>(idx2.len, idx2.pos).unwrap() };
             // succeed if we received the correct data given the positions
@@ -216,13 +230,14 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             // write the entries
-            let mut writer = LogWriter::create(&fpath).unwrap();
+            let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
             let indices: Vec<LogIndex> = entries.iter().map(|buf| writer.append(&buf).unwrap()).collect();
             writer.flush().unwrap();
             // read the entries
-            let mut reader = LogReader::open(&fpath).unwrap();
+            let reader = LogReader::new(open(&fpath).unwrap());
+            let mut iter = LogIterator::new(open(&fpath).unwrap()).unwrap();
             for (idx, buf) in indices.iter().zip(entries) {
-                let (idx_from_reader, buf_from_reader) = reader.next::<Vec<u8>>().unwrap().unwrap();
+                let (idx_from_reader, buf_from_reader) = iter.next::<Vec<u8>>().unwrap().unwrap();
                 if *idx != idx_from_reader || buf != buf_from_reader {
                     return false;
                 }

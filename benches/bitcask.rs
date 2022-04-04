@@ -60,7 +60,7 @@ pub fn bench_overwrite(c: &mut Criterion) {
 
     let (engine, _tmpdir) = get_bitcask();
     kv_pairs.iter().cloned().for_each(|(k, v)| {
-        engine.set(&k, &v).unwrap();
+        engine.set(k, v).unwrap();
     });
 
     let mut g = c.benchmark_group("bitcask_overwrite");
@@ -103,7 +103,7 @@ pub fn bench_read(c: &mut Criterion) {
 
     let (engine, _tmpdir) = get_bitcask();
     kv_pairs.iter().cloned().for_each(|(k, v)| {
-        engine.set(&k, &v).unwrap();
+        engine.set(k, v).unwrap();
     });
 
     let mut g = c.benchmark_group("bitcask_read");

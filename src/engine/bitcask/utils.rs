@@ -2,7 +2,7 @@ use std::{
     collections::{btree_set::IntoIter, BTreeSet},
     ffi::OsStr,
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     time,
 };
 
@@ -11,13 +11,21 @@ const DATAFILE_EXT: &str = "data";
 const HINTFILE_EXT: &str = "hint";
 
 /// Return the data file name given its ID.
-pub fn datafile_name(fileid: u64) -> String {
-    format!("{}.bitcask.{}", fileid, DATAFILE_EXT)
+pub fn datafile_name<P>(path: P, fileid: u64) -> PathBuf
+where
+    P: AsRef<Path>,
+{
+    path.as_ref()
+        .join(format!("{}.bitcask.{}", fileid, DATAFILE_EXT))
 }
 
 /// Return the hint file name given its ID.
-pub fn hintfile_name(fileid: u64) -> String {
-    format!("{}.bitcask.{}", fileid, HINTFILE_EXT)
+pub fn hintfile_name<P>(path: P, fileid: u64) -> PathBuf
+where
+    P: AsRef<Path>,
+{
+    path.as_ref()
+        .join(format!("{}.bitcask.{}", fileid, HINTFILE_EXT))
 }
 
 /// Returns a list of sorted file IDs by parsing the data file names in the directory.
@@ -65,9 +73,9 @@ mod tests {
             // Create random datafiles and hintfiles in the directory
             let dir = tempfile::tempdir().unwrap();
             for fileid in 0..n.min(100) {
-                tmps.push(fs::File::create(dir.path().join(datafile_name(fileid))).unwrap());
+                tmps.push(fs::File::create(datafile_name(&dir, fileid)).unwrap());
                 if rand::random() {
-                    tmps.push(fs::File::create(dir.path().join(hintfile_name(fileid))).unwrap());
+                    tmps.push(fs::File::create(hintfile_name(&dir, fileid)).unwrap());
                 }
             }
 
