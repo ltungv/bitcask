@@ -338,7 +338,7 @@ impl BitCaskWriter {
 
         self.ctx
             .min_fileid
-            .store(merge_fileid, atomic::Ordering::SeqCst);
+            .store(merge_fileid, atomic::Ordering::Release);
 
         // Remove stale files from system
         let stale_fileids = utils::sorted_fileids(path)?.filter(|&id| id < merge_fileid);
@@ -374,7 +374,6 @@ impl BitCaskWriter {
         };
 
         let index = self.writer.append(&entry)?;
-        self.writer.flush()?;
         self.collect_written(index.len)?;
         Ok(index)
     }
@@ -388,7 +387,6 @@ impl BitCaskWriter {
         };
 
         let index = self.writer.append(&entry)?;
-        self.writer.flush()?;
         self.garbage += index.len; // tombstones are wasted space
         self.collect_written(index.len)?;
         Ok(())
@@ -442,7 +440,9 @@ impl BitCaskReader {
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
         match self.ctx.keydir.get(key) {
             Some(keydir_entry) => {
-                let datafile_entry = self.readers.borrow_mut().read::<_, DataFileEntry>(
+                let mut readers = self.readers.borrow_mut();
+                readers.drop_stale(self.ctx.min_fileid.load(atomic::Ordering::Acquire));
+                let datafile_entry = readers.read::<_, DataFileEntry>(
                     self.ctx.path.as_path(),
                     keydir_entry.fileid,
                     keydir_entry.len,
