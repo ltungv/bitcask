@@ -251,7 +251,7 @@ impl BitCaskWriter {
             },
         ) {
             Some(prev_keydir_entry) => {
-                let prev_datafile_entry = self.readers.borrow_mut().read::<_, DataFileEntry>(
+                let prev_datafile_entry = self.readers.borrow_mut().read::<DataFileEntry, _>(
                     self.ctx.path.as_path(),
                     prev_keydir_entry.fileid,
                     prev_keydir_entry.len,
@@ -275,7 +275,7 @@ impl BitCaskWriter {
     fn delete(&mut self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
         match self.ctx.keydir.remove(key) {
             Some((_, prev_keydir_entry)) => {
-                let prev_datafile_entry = self.readers.borrow_mut().read::<_, DataFileEntry>(
+                let prev_datafile_entry = self.readers.borrow_mut().read::<DataFileEntry, _>(
                     self.ctx.path.as_path(),
                     prev_keydir_entry.fileid,
                     prev_keydir_entry.len,
@@ -442,7 +442,7 @@ impl BitCaskReader {
             Some(keydir_entry) => {
                 let mut readers = self.readers.borrow_mut();
                 readers.drop_stale(self.ctx.min_fileid.load(atomic::Ordering::Acquire));
-                let datafile_entry = readers.read::<_, DataFileEntry>(
+                let datafile_entry = readers.read::<DataFileEntry, _>(
                     self.ctx.path.as_path(),
                     keydir_entry.fileid,
                     keydir_entry.len,

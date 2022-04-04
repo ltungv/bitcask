@@ -38,7 +38,7 @@ pub struct LogDir(BTreeMap<u64, LogReader>);
 
 impl LogDir {
     /// Deserialize a data entry given the directory path and the file position
-    pub fn read<P, T>(&mut self, path: P, fileid: u64, len: u64, pos: u64) -> bincode::Result<T>
+    pub fn read<T, P>(&mut self, path: P, fileid: u64, len: u64, pos: u64) -> bincode::Result<T>
     where
         T: DeserializeOwned,
         P: AsRef<Path>,
