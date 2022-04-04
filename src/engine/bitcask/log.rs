@@ -50,18 +50,15 @@ impl LogDir {
         Ok(reader)
     }
 
-    /// Return the lists of file IDs smaller than the given `min_fileid`.
-    pub fn stale_fileids(&self, min_fileid: u64) -> Vec<u64> {
-        self.0
+    /// Remove readers whose ID is smaller than the given `min_fileid`.
+    pub fn drop_stale(&mut self, min_fileid: u64) {
+        let stale_fileids: Vec<u64> = self
+            .0
             .keys()
             .filter(|&&id| id < min_fileid)
             .cloned()
-            .collect()
-    }
-
-    /// Remove readers whose ID is smaller than the given `min_fileid`.
-    pub fn drop_stale(&mut self, min_fileid: u64) {
-        self.stale_fileids(min_fileid).iter().for_each(|id| {
+            .collect();
+        stale_fileids.iter().for_each(|id| {
             self.0.remove(id);
         });
     }

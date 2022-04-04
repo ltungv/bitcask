@@ -126,30 +126,31 @@ impl BitCask {
     where
         P: AsRef<Path>,
     {
-        let (keydir, active_fileid, garbage) = rebuild_keydir(&path)?;
+        let (index, active_fileid, garbage) = rebuild_index(&path)?;
         debug!(?active_fileid, "Got new activate file ID");
 
-        let ctx = Arc::new(BitCaskContext {
-            conf: conf.clone(),
-            path: path.as_ref().to_path_buf(),
-            min_fileid: atomic::AtomicU64::new(0),
+        let keydir = KeyDir {
+            path: Arc::new(path.as_ref().to_path_buf()),
+            min_fileid: Arc::new(atomic::AtomicU64::new(0)),
+            index: Arc::new(index),
+            readers: Default::default(),
+        };
+
+        let ctx = BitCaskContext {
+            conf: Arc::new(conf.clone()),
             keydir,
-        });
+        };
 
         let readers = Arc::new(ArrayQueue::new(conf.concurrency));
         for _ in 0..conf.concurrency {
             readers
-                .push(BitCaskReader {
-                    ctx: Arc::clone(&ctx),
-                    readers: Default::default(),
-                })
+                .push(BitCaskReader { ctx: ctx.clone() })
                 .expect("unreachable error");
         }
 
         let writer = LogWriter::new(log::create(utils::datafile_name(&path, active_fileid))?)?;
         let writer = Arc::new(Mutex::new(BitCaskWriter {
             ctx,
-            readers: Default::default(),
             writer,
             active_fileid,
             written: 0,
@@ -157,6 +158,14 @@ impl BitCask {
         }));
 
         Ok(BitCask { writer, readers })
+    }
+
+    fn put(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
+        self.writer.lock().unwrap().put(key, value)
+    }
+
+    fn delete(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
+        self.writer.lock().unwrap().delete(key)
     }
 
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
@@ -172,14 +181,6 @@ impl BitCask {
             // Spin until we have access to a read context
             backoff.spin();
         }
-    }
-
-    fn put(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
-        self.writer.lock().unwrap().put(key, value)
-    }
-
-    fn delete(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
-        self.writer.lock().unwrap().delete(key)
     }
 
     fn merge(&self) -> Result<(), BitCaskError> {
@@ -214,20 +215,132 @@ struct DataFileEntry {
     value: Option<Bytes>,
 }
 
-type KeyDir = DashMap<Bytes, KeyDirEntry>;
-
 #[derive(Debug)]
+struct KeyDir {
+    path: Arc<path::PathBuf>,
+    min_fileid: Arc<atomic::AtomicU64>,
+    index: Arc<DashMap<Bytes, KeyDirEntry>>,
+    readers: RefCell<LogDir>,
+}
+
+impl KeyDir {
+    fn put(
+        &self,
+        key: Bytes,
+        fileid: u64,
+        len: u64,
+        pos: u64,
+        tstamp: u128,
+    ) -> Result<Option<(DataFileEntry, u64)>, BitCaskError> {
+        let entry = KeyDirEntry {
+            fileid,
+            len,
+            pos,
+            tstamp,
+        };
+        self.index
+            .insert(key, entry)
+            .map(|keydir_entry| {
+                self.read(&keydir_entry)
+                    .map(|datafile_entry| (datafile_entry, keydir_entry.len))
+            })
+            .transpose()
+    }
+
+    fn delete(&self, key: &Bytes) -> Result<Option<(DataFileEntry, u64)>, BitCaskError> {
+        self.index
+            .remove(key)
+            .map(|(_, keydir_entry)| {
+                self.read(&keydir_entry)
+                    .map(|datafile_entry| (datafile_entry, keydir_entry.len))
+            })
+            .transpose()
+    }
+
+    fn get(&self, key: &Bytes) -> Result<Option<DataFileEntry>, BitCaskError> {
+        self.index.get(key).map(|e| self.read(&e)).transpose()
+    }
+
+    fn merge(&self, merge_fileid: u64) -> Result<(), BitCaskError> {
+        let path = self.path.as_path();
+        let mut merge_datafile_writer =
+            BufWriter::new(log::create(utils::datafile_name(path, merge_fileid))?);
+        let mut merge_hintfile_writer =
+            LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
+
+        let mut merge_pos = 0;
+        let mut readers = self.readers.borrow_mut();
+
+        for mut keydir_entry in self.index.iter_mut() {
+            // NOTE: Unsafe usage.
+            // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+            // thus the readers can savely use memmap to access the data file randomly.
+            let nbytes = unsafe {
+                readers.get(path, keydir_entry.fileid)?.copy_raw(
+                    keydir_entry.len,
+                    keydir_entry.pos,
+                    &mut merge_datafile_writer,
+                )?
+            };
+
+            // update keydir so it points to the merge data file
+            keydir_entry.fileid = merge_fileid;
+            keydir_entry.len = nbytes;
+            keydir_entry.pos = merge_pos;
+
+            merge_pos += nbytes;
+            merge_hintfile_writer.append(&HintFileEntry {
+                tstamp: keydir_entry.tstamp,
+                len: keydir_entry.len,
+                pos: keydir_entry.pos,
+                key: keydir_entry.key().clone(),
+            })?;
+        }
+
+        readers.drop_stale(merge_fileid);
+        self.min_fileid
+            .store(merge_fileid, atomic::Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    fn read(&self, keydir_entry: &KeyDirEntry) -> Result<DataFileEntry, BitCaskError> {
+        // Remove stale readers
+        let mut readers = self.readers.borrow_mut();
+        readers.drop_stale(self.min_fileid.load(atomic::Ordering::SeqCst));
+
+        // NOTE: Unsafe usage.
+        // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+        // thus the readers can safely use memmap to access the data file randomly.
+        let prev_datafile_entry = unsafe {
+            readers
+                .get(self.path.as_path(), keydir_entry.fileid)?
+                .at::<DataFileEntry>(keydir_entry.len, keydir_entry.pos)?
+        };
+        Ok(prev_datafile_entry)
+    }
+}
+
+impl Clone for KeyDir {
+    fn clone(&self) -> Self {
+        Self {
+            path: Arc::clone(&self.path),
+            min_fileid: Arc::clone(&self.min_fileid),
+            index: Arc::clone(&self.index),
+            readers: RefCell::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct BitCaskContext {
-    conf: BitCaskConfig,
-    path: path::PathBuf,
-    min_fileid: atomic::AtomicU64,
+    conf: Arc<BitCaskConfig>,
     keydir: KeyDir,
 }
 
 #[derive(Debug)]
 struct BitCaskWriter {
-    ctx: Arc<BitCaskContext>,
-    readers: RefCell<LogDir>,
+    ctx: BitCaskContext,
     writer: LogWriter,
     active_fileid: u64,
     written: u64,
@@ -243,29 +356,14 @@ impl BitCaskWriter {
     fn put(&mut self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
         let tstamp = utils::timestamp();
         let index = self.put_data(tstamp, &key, &value)?;
-
-        let keydir_entry = KeyDirEntry {
-            fileid: self.active_fileid,
-            len: index.len,
-            pos: index.pos,
-            tstamp,
-        };
-
-        match self.ctx.keydir.insert(key, keydir_entry) {
-            Some(prev_keydir_entry) => {
-                // NOTE: Unsafe usage.
-                // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
-                // thus the readers can savely use memmap to access the data file randomly.
-                let prev_datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
-                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
-                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
-                };
-                // NOTE: `collect_garbage` must only be called after retrieving the previous key
-                // value otherwise we'll have an invalid keydir entry.
-                self.collect_garbage(prev_keydir_entry.len)?;
-                Ok(prev_datafile_entry.value)
+        match self
+            .ctx
+            .keydir
+            .put(key, self.active_fileid, index.len, index.pos, tstamp)?
+        {
+            Some((e, garbage)) => {
+                self.collect_garbage(garbage)?;
+                Ok(e.value)
             }
             None => Ok(None),
         }
@@ -278,20 +376,11 @@ impl BitCaskWriter {
     /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
     /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn delete(&mut self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
-        match self.ctx.keydir.remove(key) {
-            Some((_, prev_keydir_entry)) => {
-                // NOTE: Unsafe usage.
-                // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
-                // thus the readers can savely use memmap to access the data file randomly.
-                let prev_datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
-                        .get(&self.ctx.path, prev_keydir_entry.fileid)?
-                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
-                };
+        match self.ctx.keydir.delete(key)? {
+            Some((e, garbage)) => {
                 self.put_tombstone(utils::timestamp(), key)?;
-                self.collect_garbage(prev_keydir_entry.len)?;
-                Ok(prev_datafile_entry.value)
+                self.collect_garbage(garbage)?;
+                Ok(e.value)
             }
             None => Ok(None),
         }
@@ -301,62 +390,18 @@ impl BitCaskWriter {
     /// files are deleted after the merge.
     fn merge(&mut self) -> Result<(), BitCaskError> {
         let merge_fileid = self.active_fileid + 1;
-        // NOTE: We use this explicit scope to control the lifetime of `readers` which mutably
-        // borrow self when `borrow_mut` is called. Both the log writers will also be dropped and
-        // flushed automatically at the end of scope.
-        {
-            let mut merge_pos = 0;
-            let mut merge_datafile_writer = BufWriter::new(log::create(utils::datafile_name(
-                &self.ctx.path,
-                merge_fileid,
-            ))?);
-            let mut merge_hintfile_writer = LogWriter::new(log::create(utils::hintfile_name(
-                &self.ctx.path,
-                merge_fileid,
-            ))?)?;
-
-            let mut readers = self.readers.borrow_mut();
-            for mut keydir_entry in self.ctx.keydir.iter_mut() {
-                // NOTE: Unsafe usage.
-                // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
-                // thus the readers can savely use memmap to access the data file randomly.
-                let nbytes = unsafe {
-                    readers.get(&self.ctx.path, keydir_entry.fileid)?.copy_raw(
-                        keydir_entry.len,
-                        keydir_entry.pos,
-                        &mut merge_datafile_writer,
-                    )?
-                };
-
-                // update keydir so it points to the merge data file
-                keydir_entry.fileid = merge_fileid;
-                keydir_entry.len = nbytes;
-                keydir_entry.pos = merge_pos;
-
-                merge_pos += nbytes;
-                merge_hintfile_writer.append(&HintFileEntry {
-                    tstamp: keydir_entry.tstamp,
-                    len: keydir_entry.len,
-                    pos: keydir_entry.pos,
-                    key: keydir_entry.key().clone(),
-                })?;
-            }
-            readers.drop_stale(merge_fileid);
-        }
-
-        self.ctx
-            .min_fileid
-            .store(merge_fileid, atomic::Ordering::SeqCst);
+        self.ctx.keydir.merge(merge_fileid)?;
 
         // Remove stale files from system
-        let stale_fileids = utils::sorted_fileids(&self.ctx.path)?.filter(|&id| id < merge_fileid);
+        let path = self.ctx.keydir.path.as_path();
+        let stale_fileids = utils::sorted_fileids(path)?.filter(|&id| id < merge_fileid);
         for id in stale_fileids {
-            if let Err(e) = fs::remove_file(utils::hintfile_name(&self.ctx.path, id)) {
+            if let Err(e) = fs::remove_file(utils::hintfile_name(path, id)) {
                 if e.kind() != io::ErrorKind::NotFound {
                     return Err(e.into());
                 }
             }
-            if let Err(e) = fs::remove_file(utils::datafile_name(&self.ctx.path, id)) {
+            if let Err(e) = fs::remove_file(utils::datafile_name(path, id)) {
                 if e.kind() != io::ErrorKind::NotFound {
                     return Err(e.into());
                 }
@@ -406,7 +451,7 @@ impl BitCaskWriter {
     fn new_active_datafile(&mut self, fileid: u64) -> Result<(), BitCaskError> {
         self.active_fileid = fileid;
         self.writer = LogWriter::new(log::create(utils::datafile_name(
-            &self.ctx.path,
+            self.ctx.keydir.path.as_path(),
             self.active_fileid,
         ))?)?;
         self.written = 0;
@@ -442,45 +487,25 @@ impl BitCaskWriter {
 
 #[derive(Debug)]
 struct BitCaskReader {
-    ctx: Arc<BitCaskContext>,
-    readers: RefCell<LogDir>,
+    ctx: BitCaskContext,
 }
 
 impl BitCaskReader {
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
-        match self.ctx.keydir.get(key) {
+        match self.ctx.keydir.get(key)? {
+            Some(e) => Ok(e.value),
             None => Ok(None),
-            Some(index) => {
-                let keydir_entry = index.value();
-                // NOTE: We use an explicit scope to limit the lifetime of `readers` which mutably
-                // borrow `self`
-                let datafile_entry = {
-                    // Remove stale readers
-                    let mut readers = self.readers.borrow_mut();
-                    readers.drop_stale(self.ctx.min_fileid.load(atomic::Ordering::SeqCst));
-
-                    // NOTE: Unsafe usage.
-                    // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
-                    // thus the readers can savely use memmap to access the data file randomly.
-                    unsafe {
-                        readers
-                            .get(&self.ctx.path, keydir_entry.fileid)?
-                            .at::<DataFileEntry>(keydir_entry.len, keydir_entry.pos)?
-                    }
-                };
-                Ok(datafile_entry.value)
-            }
         }
     }
 }
 
 /// Returns a list of sorted filed IDs by parsing the names of data files in the directory
 /// given by `path`.
-fn rebuild_keydir<P>(path: P) -> Result<(KeyDir, u64, u64), BitCaskError>
+fn rebuild_index<P>(path: P) -> Result<(DashMap<Bytes, KeyDirEntry>, u64, u64), BitCaskError>
 where
     P: AsRef<Path>,
 {
-    let keydir = KeyDir::default();
+    let keydir = DashMap::default();
     let fileids = utils::sorted_fileids(&path)?;
 
     let mut active_fileid: Option<u64> = None;
@@ -514,7 +539,7 @@ where
 }
 
 fn populate_keydir_with_hintfile(
-    keydir: &KeyDir,
+    keydir: &DashMap<Bytes, KeyDirEntry>,
     file: fs::File,
     fileid: u64,
 ) -> Result<(), BitCaskError> {
@@ -535,7 +560,7 @@ fn populate_keydir_with_hintfile(
 }
 
 fn populate_keydir_with_datafile(
-    keydir: &KeyDir,
+    keydir: &DashMap<Bytes, KeyDirEntry>,
     file: fs::File,
     fileid: u64,
 ) -> Result<u64, BitCaskError> {
