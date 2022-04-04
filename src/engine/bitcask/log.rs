@@ -56,24 +56,25 @@ impl LogDir {
     where
         P: AsRef<Path>,
     {
-        let reader = self
-            .0
-            .entry(fileid)
-            .or_insert(LogReader::new(open(utils::datafile_name(&path, fileid))?));
-        Ok(reader)
+        if !self.0.contains_key(&fileid) {
+            let reader = LogReader::new(open(utils::datafile_name(&path, fileid))?);
+            Ok(self.0.entry(fileid).or_insert(reader))
+        } else {
+            Ok(self.0.get(&fileid).expect("unreachable error"))
+        }
     }
 
     /// Remove readers whose ID is smaller than the given `min_fileid`.
     pub fn drop_stale(&mut self, min_fileid: u64) {
-        let stale_fileids: Vec<u64> = self
+        let stale_fileids = self
             .0
             .keys()
-            .filter(|&&id| id < min_fileid)
             .cloned()
-            .collect();
-        stale_fileids.iter().for_each(|id| {
-            self.0.remove(id);
-        });
+            .filter(|&id| id < min_fileid)
+            .collect::<Vec<u64>>();
+        for id in stale_fileids {
+            self.0.remove(&id);
+        }
     }
 }
 
