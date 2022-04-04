@@ -11,7 +11,7 @@ use opal::engine::KeyValueStore;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 
-const ITER: usize = 10000;
+const ITER: usize = 1000;
 const KEY_SIZE: usize = 64;
 const VAL_SIZE: usize = 256;
 
