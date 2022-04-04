@@ -26,7 +26,9 @@ impl KeyValueStore for SledKeyValueStore {
     }
 
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
-        self.db.get(key).map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
+        self.db
+            .get(key)
+            .map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
     }
 
     fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {

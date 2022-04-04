@@ -26,7 +26,7 @@ pub async fn main() -> Result<(), anyhow::Error> {
             let db_dir = cli.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
-            let storage = BitCaskKeyValueStore(
+            let storage = BitCaskKeyValueStore::from(
                 BitCaskConfig::default()
                     .concurrency(cli.nthreads)
                     .open(db_dir)?,

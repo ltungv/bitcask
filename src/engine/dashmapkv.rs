@@ -13,7 +13,7 @@ pub struct DashMapKeyValueStore {
 }
 
 #[derive(Error, Debug)]
-#[error("in-memory key-value store error")]
+#[error("In-memory key-value store error")]
 pub struct DashMapKeyValueStoreErrror;
 
 impl KeyValueStore for DashMapKeyValueStore {

@@ -28,7 +28,7 @@ use log::{LogDir, LogIndex, LogIterator, LogWriter};
 
 /// A wrapper around [`BitCask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
-pub struct BitCaskKeyValueStore(pub BitCask);
+pub struct BitCaskKeyValueStore(BitCask);
 
 impl KeyValueStore for BitCaskKeyValueStore {
     type Error = BitCaskError;
@@ -43,6 +43,12 @@ impl KeyValueStore for BitCaskKeyValueStore {
 
     fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
         self.0.delete(key)
+    }
+}
+
+impl From<BitCask> for BitCaskKeyValueStore {
+    fn from(bitcask: BitCask) -> Self {
+        Self(bitcask)
     }
 }
 
@@ -477,11 +483,16 @@ where
     let keydir = KeyDir::default();
     let fileids = utils::sorted_fileids(&path)?;
 
-    let mut active_fileid = 0;
+    let mut active_fileid: Option<u64> = None;
     let mut garbage = 0;
     for fileid in fileids {
-        if fileid > active_fileid {
-            active_fileid = fileid;
+        match &mut active_fileid {
+            None => active_fileid = Some(fileid),
+            Some(id) => {
+                if fileid > *id {
+                    *id = fileid;
+                }
+            }
         }
         match log::open(utils::hintfile_name(&path, fileid)) {
             Ok(f) => populate_keydir_with_hintfile(&keydir, f, fileid)?,
@@ -498,10 +509,7 @@ where
         }
     }
 
-    if active_fileid > 0 {
-        active_fileid += 1;
-    }
-
+    let active_fileid = active_fileid.map(|id| id + 1).unwrap_or_default();
     Ok((keydir, active_fileid, garbage))
 }
 
