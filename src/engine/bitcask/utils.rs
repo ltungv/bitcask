@@ -1,5 +1,5 @@
 use std::{
-    collections::{btree_set::IntoIter, BTreeSet},
+    collections::BTreeSet,
     ffi::OsStr,
     fs, io,
     path::{Path, PathBuf},
@@ -29,7 +29,7 @@ where
 }
 
 /// Returns a list of sorted file IDs by parsing the data file names in the directory.
-pub fn sorted_fileids<P>(path: P) -> io::Result<IntoIter<u64>>
+pub fn sorted_fileids<P>(path: P) -> io::Result<impl Iterator<Item = u64>>
 where
     P: AsRef<Path>,
 {
