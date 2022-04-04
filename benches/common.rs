@@ -8,7 +8,7 @@ use rand::{
     prelude::*,
 };
 use rayon::{
-    iter::{ParallelIterator, IntoParallelIterator},
+    iter::{IntoParallelIterator, ParallelIterator},
     ThreadPool, ThreadPoolBuilder,
 };
 use tempfile::TempDir;
@@ -27,18 +27,22 @@ pub fn concurrent_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Ve
 where
     E: KeyValueStore,
 {
-    kv_pairs.into_par_iter().for_each_with(engine, |engine, (k, v)| {
-        engine.set(black_box(k), black_box(v)).unwrap();
-    });
+    kv_pairs
+        .into_par_iter()
+        .for_each_with(engine, |engine, (k, v)| {
+            engine.set(black_box(k), black_box(v)).unwrap();
+        });
 }
 
 pub fn concurrent_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
 where
     E: KeyValueStore,
 {
-    kv_pairs.into_par_iter().for_each_with(engine, |engine, (k, _)| {
-        engine.get(black_box(&k)).unwrap();
-    });
+    kv_pairs
+        .into_par_iter()
+        .for_each_with(engine, |engine, (k, _)| {
+            engine.get(black_box(&k)).unwrap();
+        });
 }
 
 pub fn sequential_write_bulk_bench_iter<E>(
@@ -69,7 +73,11 @@ where
 
 pub fn get_bitcask() -> (BitCaskKeyValueStore, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let engine = BitCaskKeyValueStore(BitCaskConfig::default().open(tmpdir.path()).unwrap());
+    let bitcask = BitCaskConfig::default()
+        .concurrency(num_cpus::get())
+        .open(tmpdir.path())
+        .unwrap();
+    let engine = BitCaskKeyValueStore::from(bitcask);
     (engine, tmpdir)
 }
 

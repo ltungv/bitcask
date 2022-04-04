@@ -21,7 +21,7 @@ pub fn bench_write(c: &mut Criterion) {
         nbytes += k.len() + v.len();
     }
 
-    let mut g = c.benchmark_group("bitcask");
+    let mut g = c.benchmark_group("bitcask_read");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
@@ -35,7 +35,7 @@ pub fn bench_write(c: &mut Criterion) {
     );
     g.finish();
 
-    let mut g = c.benchmark_group("sled");
+    let mut g = c.benchmark_group("sled_read");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
@@ -49,7 +49,7 @@ pub fn bench_write(c: &mut Criterion) {
     );
     g.finish();
 
-    let mut g = c.benchmark_group("dashmap");
+    let mut g = c.benchmark_group("dashmap_read");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
@@ -154,7 +154,7 @@ pub fn bench_read(c: &mut Criterion) {
         nbytes += k.len() + v.len();
     }
 
-    let mut g = c.benchmark_group("bitcask");
+    let mut g = c.benchmark_group("bitcask_read");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
@@ -171,7 +171,7 @@ pub fn bench_read(c: &mut Criterion) {
     }
     g.finish();
 
-    let mut g = c.benchmark_group("sled");
+    let mut g = c.benchmark_group("sled_read");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
@@ -188,7 +188,7 @@ pub fn bench_read(c: &mut Criterion) {
     }
     g.finish();
 
-    let mut g = c.benchmark_group("dashmap");
+    let mut g = c.benchmark_group("dashmap_read");
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_with_input(
         "concurrent",
