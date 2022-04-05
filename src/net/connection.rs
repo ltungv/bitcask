@@ -253,11 +253,11 @@ mod tests {
             (Frame::BulkString(Bytes::new()), b"$0\r\n\r\n".as_slice()),
             (
                 Frame::BulkString("hello\nworld".into()),
-                b"$11\r\nhello\nworld\r\n.as_slice()",
+                b"$11\r\nhello\nworld\r\n".as_slice(),
             ),
             (
                 Frame::BulkString("hello\r\nworld".into()),
-                b"$12\r\nhello\r\nworld\r\n.as_slice()",
+                b"$12\r\nhello\r\nworld\r\n".as_slice(),
             ),
             // arrays
             (Frame::Array(vec![]), b"*0\r\n".as_slice()),
