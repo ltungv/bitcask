@@ -247,16 +247,8 @@ impl BitcaskWriter {
     /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn put(&mut self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitcaskError> {
         let tstamp = utils::timestamp();
-        let index = self.put_data(tstamp, &key, &value)?;
-        match self.ctx.keydir.insert(
-            key,
-            KeyDirEntry {
-                fileid: self.active_fileid,
-                len: index.len,
-                pos: index.pos,
-                tstamp,
-            },
-        ) {
+        let keydir_entry = self.put_data(tstamp, &key, &value)?;
+        match self.ctx.keydir.insert(key, keydir_entry) {
             Some(prev_keydir_entry) => {
                 // SAFETY: We have taken `prev_keydir_entry` from KeyDir which is ensured to point
                 // to valid data file positions. Thus we can be confident that the Mmap won't be
@@ -381,7 +373,7 @@ impl BitcaskWriter {
         tstamp: u128,
         key: &Bytes,
         value: &Bytes,
-    ) -> Result<LogIndex, BitcaskError> {
+    ) -> Result<KeyDirEntry, BitcaskError> {
         let entry = DataFileEntry {
             tstamp,
             key: key.clone(),
@@ -389,8 +381,15 @@ impl BitcaskWriter {
         };
 
         let index = self.writer.append(&entry)?;
+        let keydir_entry = KeyDirEntry {
+            fileid: self.active_fileid,
+            len: index.len,
+            pos: index.pos,
+            tstamp,
+        };
+
         self.collect_written(index.len)?;
-        Ok(index)
+        Ok(keydir_entry)
     }
 
     /// Apppend a tomestone entry to the active data file.
