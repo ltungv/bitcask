@@ -13,6 +13,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use bytesize::ByteSize;
 use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -62,8 +63,8 @@ pub enum BitcaskError {
 /// Configuration for a `Bitcask` instance.
 #[derive(Debug, Clone)]
 pub struct BitcaskConfig {
-    max_datafile_size: u64,
-    max_garbage_size: u64,
+    max_datafile_size: ByteSize,
+    max_garbage_size: ByteSize,
     concurrency: usize,
 }
 
@@ -77,13 +78,13 @@ impl BitcaskConfig {
     }
 
     /// Set the max data file size. The writer will open a new data file when reaches this value.
-    pub fn max_datafile_size(&mut self, max_datafile_size: u64) -> &mut Self {
+    pub fn max_datafile_size(&mut self, max_datafile_size: ByteSize) -> &mut Self {
         self.max_datafile_size = max_datafile_size;
         self
     }
 
     /// Set the max garbage size. The writer will merge data files when reaches this value.
-    pub fn max_garbage_size(&mut self, max_garbage_size: u64) -> &mut Self {
+    pub fn max_garbage_size(&mut self, max_garbage_size: ByteSize) -> &mut Self {
         self.max_garbage_size = max_garbage_size;
         self
     }
@@ -96,8 +97,8 @@ impl BitcaskConfig {
 }
 impl Default for BitcaskConfig {
     fn default() -> Self {
-        let max_datafile_size = 2 * 1024 * 1024 * 1024; // 2 GBs
-        let max_garbage_size = max_datafile_size * 30 / 100; // 2 Gbs * 30%
+        let max_datafile_size = ByteSize::gib(2); // 2 GiBs
+        let max_garbage_size = ByteSize(max_datafile_size.as_u64() * 30 / 100); // 2 GiBs * 30%
         Self {
             max_datafile_size,
             max_garbage_size,

@@ -11,6 +11,7 @@ anyhow = "1"
 atoi = "1"
 bincode = "1"
 bytes = { version = "1", features = ["serde"] }
+bytesize = "1"
 clap = { version = "3.1.8", features = ["derive"] }
 crossbeam = "0.8"
 dashmap = "5"

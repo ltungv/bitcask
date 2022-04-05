@@ -1,5 +1,6 @@
 use std::{env, fs, net::IpAddr, path};
 
+use bytesize::ByteSize;
 use clap::{Args, Parser, Subcommand};
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -92,11 +93,11 @@ enum Commands {
 struct BitcaskArgs {
     /// Maximum size of the active data file
     #[clap(long)]
-    max_datafile_size: Option<u64>,
+    max_datafile_size: Option<ByteSize>,
 
     /// Maximum number of unused bytes before triggering a merge
     #[clap(long)]
-    max_garbage_size: Option<u64>,
+    max_garbage_size: Option<ByteSize>,
 
     /// Number of concurrent reads the engine can handle
     #[clap(long)]
