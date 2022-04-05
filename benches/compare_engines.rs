@@ -3,10 +3,10 @@ mod common;
 use common::{
     concurrent_read_bulk_bench_iter, concurrent_write_bulk_bench_iter, get_bitcask, get_dashmap,
     get_sled, get_threadpool, rand_kv_pairs, sequential_read_bulk_bench_iter,
-    sequential_write_bulk_bench_iter, KeyValuePair,
+    sequential_write_bulk_bench_iter, EngineType, KeyValuePair,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion, Throughput};
-use opal::engine::{self, KeyValueStore};
+use opal::engine::KeyValueStore;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 
@@ -26,17 +26,17 @@ pub fn bench_write(c: &mut Criterion) {
 
     g.bench_with_input(
         "bitcask",
-        &(&kv_pairs, engine::Type::BitCask),
+        &(&kv_pairs, EngineType::Bitcask),
         concurrent_write_bulk_bench,
     );
     g.bench_with_input(
         "sled",
-        &(&kv_pairs, engine::Type::Sled),
+        &(&kv_pairs, EngineType::Sled),
         concurrent_write_bulk_bench,
     );
     g.bench_with_input(
         "dashmap",
-        &(&kv_pairs, engine::Type::DashMap),
+        &(&kv_pairs, EngineType::DashMap),
         concurrent_write_bulk_bench,
     );
     g.finish();
@@ -46,17 +46,17 @@ pub fn bench_write(c: &mut Criterion) {
 
     g.bench_with_input(
         "bitcask",
-        &(&kv_pairs, engine::Type::BitCask),
+        &(&kv_pairs, EngineType::Bitcask),
         sequential_write_bulk_bench,
     );
     g.bench_with_input(
         "sled",
-        &(&kv_pairs, engine::Type::Sled),
+        &(&kv_pairs, EngineType::Sled),
         sequential_write_bulk_bench,
     );
     g.bench_with_input(
         "dashmap",
-        &(&kv_pairs, engine::Type::DashMap),
+        &(&kv_pairs, EngineType::DashMap),
         sequential_write_bulk_bench,
     );
     g.finish();
@@ -64,11 +64,11 @@ pub fn bench_write(c: &mut Criterion) {
 
 fn concurrent_write_bulk_bench(
     b: &mut Bencher,
-    (kv_pairs, engine): &(&Vec<KeyValuePair>, engine::Type),
+    (kv_pairs, engine): &(&Vec<KeyValuePair>, EngineType),
 ) {
     let pool = get_threadpool(num_cpus::get_physical());
     match *engine {
-        engine::Type::BitCask => {
+        EngineType::Bitcask => {
             pool.install(|| {
                 b.iter_batched(
                     || {
@@ -80,7 +80,7 @@ fn concurrent_write_bulk_bench(
                 )
             });
         }
-        engine::Type::Sled => {
+        EngineType::Sled => {
             pool.install(|| {
                 b.iter_batched(
                     || {
@@ -92,7 +92,7 @@ fn concurrent_write_bulk_bench(
                 )
             });
         }
-        engine::Type::DashMap => {
+        EngineType::DashMap => {
             pool.install(|| {
                 b.iter_batched(
                     || {
@@ -109,10 +109,10 @@ fn concurrent_write_bulk_bench(
 
 fn sequential_write_bulk_bench(
     b: &mut Bencher,
-    (kv_pairs, engine): &(&Vec<KeyValuePair>, engine::Type),
+    (kv_pairs, engine): &(&Vec<KeyValuePair>, EngineType),
 ) {
     match *engine {
-        engine::Type::BitCask => {
+        EngineType::Bitcask => {
             b.iter_batched(
                 || {
                     let (engine, tmpdir) = get_bitcask();
@@ -122,7 +122,7 @@ fn sequential_write_bulk_bench(
                 BatchSize::SmallInput,
             );
         }
-        engine::Type::Sled => {
+        EngineType::Sled => {
             b.iter_batched(
                 || {
                     let (engine, tmpdir) = get_sled();
@@ -132,7 +132,7 @@ fn sequential_write_bulk_bench(
                 BatchSize::SmallInput,
             );
         }
-        engine::Type::DashMap => {
+        EngineType::DashMap => {
             b.iter_batched(
                 || {
                     let (engine, tmpdir) = get_dashmap();
@@ -157,17 +157,17 @@ pub fn bench_read(c: &mut Criterion) {
 
     g.bench_with_input(
         "bitcask",
-        &(&kv_pairs, engine::Type::BitCask),
+        &(&kv_pairs, EngineType::Bitcask),
         concurrent_read_bulk_bench,
     );
     g.bench_with_input(
         "sled",
-        &(&kv_pairs, engine::Type::Sled),
+        &(&kv_pairs, EngineType::Sled),
         concurrent_read_bulk_bench,
     );
     g.bench_with_input(
         "dashmap",
-        &(&kv_pairs, engine::Type::DashMap),
+        &(&kv_pairs, EngineType::DashMap),
         concurrent_read_bulk_bench,
     );
     g.finish();
@@ -192,12 +192,12 @@ pub fn bench_read(c: &mut Criterion) {
 
 fn concurrent_read_bulk_bench(
     b: &mut Bencher,
-    (kv_pairs, engine): &(&Vec<KeyValuePair>, engine::Type),
+    (kv_pairs, engine): &(&Vec<KeyValuePair>, EngineType),
 ) {
     let pool = get_threadpool(num_cpus::get_physical());
     let mut rng = StdRng::from_seed([0u8; 32]);
     match *engine {
-        engine::Type::BitCask => {
+        EngineType::Bitcask => {
             let (engine, _tmpdir) = get_bitcask();
             kv_pairs.iter().for_each(|(k, v)| {
                 engine.set(k.clone(), v.clone()).unwrap();
@@ -214,7 +214,7 @@ fn concurrent_read_bulk_bench(
                 )
             });
         }
-        engine::Type::Sled => {
+        EngineType::Sled => {
             let (engine, _tmpdir) = get_sled();
             kv_pairs.iter().cloned().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();
@@ -231,7 +231,7 @@ fn concurrent_read_bulk_bench(
                 )
             });
         }
-        engine::Type::DashMap => {
+        EngineType::DashMap => {
             let (engine, _tmpdir) = get_dashmap();
             kv_pairs.iter().cloned().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();

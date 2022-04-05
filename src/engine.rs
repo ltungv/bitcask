@@ -4,11 +4,9 @@ mod bitcask;
 mod dashmapkv;
 mod sledkv;
 
-use std::str::FromStr;
-
 use bytes::Bytes;
 
-pub use bitcask::{BitCaskConfig, BitCaskKeyValueStore};
+pub use bitcask::{BitcaskConfig, BitcaskKeyValueStore};
 pub use dashmapkv::DashMapKeyValueStore;
 pub use sledkv::SledKeyValueStore;
 
@@ -27,28 +25,4 @@ pub trait KeyValueStore: Clone + Send + 'static {
 
     /// Delete a key and return its value, if it exists. Return `None` if the key does not exist
     fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error>;
-}
-
-/// Supported type of engine.
-#[derive(Debug)]
-pub enum Type {
-    /// BitCask engine.
-    BitCask,
-    /// Sled database engine.
-    Sled,
-    /// In-memory engine.
-    DashMap,
-}
-
-impl FromStr for Type {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().trim() {
-            "bitcask" => Ok(Self::BitCask),
-            "sled" => Ok(Self::Sled),
-            "dashmap" => Ok(Self::DashMap),
-            _ => Err("unsupported"),
-        }
-    }
 }

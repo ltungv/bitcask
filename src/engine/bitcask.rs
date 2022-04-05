@@ -23,12 +23,12 @@ use tracing::{debug, error};
 use super::KeyValueStore;
 use log::{LogDir, LogIndex, LogIterator, LogWriter};
 
-/// A wrapper around [`BitCask`] that implements the `KeyValueStore` trait.
+/// A wrapper around [`Bitcask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
-pub struct BitCaskKeyValueStore(BitCask);
+pub struct BitcaskKeyValueStore(Bitcask);
 
-impl KeyValueStore for BitCaskKeyValueStore {
-    type Error = BitCaskError;
+impl KeyValueStore for BitcaskKeyValueStore {
+    type Error = BitcaskError;
 
     fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
         self.0.put(key, value)
@@ -43,15 +43,15 @@ impl KeyValueStore for BitCaskKeyValueStore {
     }
 }
 
-impl From<BitCask> for BitCaskKeyValueStore {
-    fn from(bitcask: BitCask) -> Self {
+impl From<Bitcask> for BitcaskKeyValueStore {
+    fn from(bitcask: Bitcask) -> Self {
         Self(bitcask)
     }
 }
 
-/// Error returned by BitCask
+/// Error returned by Bitcask
 #[derive(Error, Debug)]
-pub enum BitCaskError {
+pub enum BitcaskError {
     #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
@@ -59,21 +59,21 @@ pub enum BitCaskError {
     Serialization(#[from] bincode::Error),
 }
 
-/// Configuration for a `BitCask` instance.
+/// Configuration for a `Bitcask` instance.
 #[derive(Debug, Clone)]
-pub struct BitCaskConfig {
+pub struct BitcaskConfig {
     max_datafile_size: u64,
     max_garbage_size: u64,
     concurrency: usize,
 }
 
-impl BitCaskConfig {
-    /// Create a `BitCask` instance at the given path with the available options.
-    pub fn open<P>(&self, path: P) -> Result<BitCask, BitCaskError>
+impl BitcaskConfig {
+    /// Create a `Bitcask` instance at the given path with the available options.
+    pub fn open<P>(&self, path: P) -> Result<Bitcask, BitcaskError>
     where
         P: AsRef<Path>,
     {
-        BitCask::open(path, self)
+        Bitcask::open(path, self)
     }
 
     /// Set the max data file size. The writer will open a new data file when reaches this value.
@@ -94,7 +94,7 @@ impl BitCaskConfig {
         self
     }
 }
-impl Default for BitCaskConfig {
+impl Default for BitcaskConfig {
     fn default() -> Self {
         let max_datafile_size = 2 * 1024 * 1024 * 1024; // 2 GBs
         let max_garbage_size = max_datafile_size * 30 / 100; // 2 Gbs * 30%
@@ -116,26 +116,26 @@ impl Default for BitCaskConfig {
 /// "keydir" that maps a key to the position of its value in the data files and uses the keydir to
 /// access the data file entries directly without having to scan all data files.
 #[derive(Clone, Debug)]
-pub struct BitCask {
+pub struct Bitcask {
     /// A mutex-protected writer used for appending data entry to the active data files. All
     /// operations that make changes to the active data file are delegated to this object.
-    writer: Arc<Mutex<BitCaskWriter>>,
+    writer: Arc<Mutex<BitcaskWriter>>,
 
     /// A readers queue for parallelizing read-access to the key-value store. Upon a read-access,
     /// a reader is taken from the queue and used for reading the data files. Once we finish
     /// reading, the read is returned back to the queue.
-    readers: Arc<ArrayQueue<BitCaskReader>>,
+    readers: Arc<ArrayQueue<BitcaskReader>>,
 }
 
-impl BitCask {
-    fn open<P>(path: P, conf: &BitCaskConfig) -> Result<BitCask, BitCaskError>
+impl Bitcask {
+    fn open<P>(path: P, conf: &BitcaskConfig) -> Result<Bitcask, BitcaskError>
     where
         P: AsRef<Path>,
     {
         let (keydir, active_fileid, garbage) = rebuild_index(&path)?;
         debug!(?active_fileid, "Got new activate file ID");
 
-        let ctx = BitCaskContext {
+        let ctx = BitcaskContext {
             conf: Arc::new(conf.clone()),
             path: Arc::new(path.as_ref().to_path_buf()),
             min_fileid: Arc::new(AtomicCell::new(0)),
@@ -145,7 +145,7 @@ impl BitCask {
         let readers = Arc::new(ArrayQueue::new(conf.concurrency));
         for _ in 0..conf.concurrency {
             readers
-                .push(BitCaskReader {
+                .push(BitcaskReader {
                     ctx: ctx.clone(),
                     readers: RefCell::default(),
                 })
@@ -153,7 +153,7 @@ impl BitCask {
         }
 
         let writer = LogWriter::new(log::create(utils::datafile_name(&path, active_fileid))?)?;
-        let writer = Arc::new(Mutex::new(BitCaskWriter {
+        let writer = Arc::new(Mutex::new(BitcaskWriter {
             ctx,
             readers: RefCell::default(),
             writer,
@@ -162,18 +162,18 @@ impl BitCask {
             garbage,
         }));
 
-        Ok(BitCask { writer, readers })
+        Ok(Bitcask { writer, readers })
     }
 
-    fn put(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
+    fn put(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitcaskError> {
         self.writer.lock().put(key, value)
     }
 
-    fn delete(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
+    fn delete(&self, key: &Bytes) -> Result<Option<Bytes>, BitcaskError> {
         self.writer.lock().delete(key)
     }
 
-    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
+    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitcaskError> {
         let backoff = Backoff::new();
         loop {
             if let Some(reader) = self.readers.pop() {
@@ -188,11 +188,11 @@ impl BitCask {
         }
     }
 
-    fn merge(&self) -> Result<(), BitCaskError> {
+    fn merge(&self) -> Result<(), BitcaskError> {
         self.writer.lock().merge()
     }
 
-    fn sync_all(&self) -> Result<(), BitCaskError> {
+    fn sync_all(&self) -> Result<(), BitcaskError> {
         self.writer.lock().sync_all()
     }
 }
@@ -221,16 +221,16 @@ struct DataFileEntry {
 }
 
 #[derive(Debug, Clone)]
-struct BitCaskContext {
-    conf: Arc<BitCaskConfig>,
+struct BitcaskContext {
+    conf: Arc<BitcaskConfig>,
     path: Arc<path::PathBuf>,
     min_fileid: Arc<AtomicCell<u64>>,
     keydir: Arc<DashMap<Bytes, KeyDirEntry>>,
 }
 
 #[derive(Debug)]
-struct BitCaskWriter {
-    ctx: BitCaskContext,
+struct BitcaskWriter {
+    ctx: BitcaskContext,
     readers: RefCell<LogDir>,
     writer: LogWriter,
     active_fileid: u64,
@@ -238,14 +238,14 @@ struct BitCaskWriter {
     garbage: u64,
 }
 
-impl BitCaskWriter {
+impl BitcaskWriter {
     /// Set the value of a key and overwrite any existing value. If a value is overwritten
     /// return it, otherwise return None.
     ///
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn put(&mut self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
+    fn put(&mut self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitcaskError> {
         let tstamp = utils::timestamp();
         let index = self.put_data(tstamp, &key, &value)?;
         match self.ctx.keydir.insert(
@@ -283,7 +283,7 @@ impl BitCaskWriter {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn delete(&mut self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
+    fn delete(&mut self, key: &Bytes) -> Result<Option<Bytes>, BitcaskError> {
         self.put_tombstone(utils::timestamp(), key)?;
         match self.ctx.keydir.remove(key) {
             Some((_, prev_keydir_entry)) => {
@@ -309,7 +309,7 @@ impl BitCaskWriter {
 
     /// Merge data files by copying data from previous data files to the merge data file. Old data
     /// files are deleted after the merge.
-    fn merge(&mut self) -> Result<(), BitCaskError> {
+    fn merge(&mut self) -> Result<(), BitcaskError> {
         let path = self.ctx.path.as_path();
         let merge_fileid = self.active_fileid + 1;
 
@@ -327,7 +327,7 @@ impl BitCaskWriter {
             let mut readers = self.readers.borrow_mut();
             for mut keydir_entry in self.ctx.keydir.iter_mut() {
                 // NOTE: Unsafe usage.
-                // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
+                // We ensure in `BitcaskWriter` that all log entries given by KeyDir are written disk,
                 // thus the readers can savely use memmap to access the data file randomly.
                 let nbytes = unsafe {
                     readers.get(path, keydir_entry.fileid)?.copy_raw(
@@ -381,7 +381,7 @@ impl BitCaskWriter {
         tstamp: u128,
         key: &Bytes,
         value: &Bytes,
-    ) -> Result<LogIndex, BitCaskError> {
+    ) -> Result<LogIndex, BitcaskError> {
         let entry = DataFileEntry {
             tstamp,
             key: key.clone(),
@@ -394,7 +394,7 @@ impl BitCaskWriter {
     }
 
     /// Apppend a tomestone entry to the active data file.
-    fn put_tombstone(&mut self, tstamp: u128, key: &Bytes) -> Result<(), BitCaskError> {
+    fn put_tombstone(&mut self, tstamp: u128, key: &Bytes) -> Result<(), BitcaskError> {
         let entry = DataFileEntry {
             tstamp,
             key: key.clone(),
@@ -408,7 +408,7 @@ impl BitCaskWriter {
     }
 
     /// Updates the active file ID and open a new data file with the new active ID.
-    fn new_active_datafile(&mut self, fileid: u64) -> Result<(), BitCaskError> {
+    fn new_active_datafile(&mut self, fileid: u64) -> Result<(), BitcaskError> {
         self.active_fileid = fileid;
         self.writer = LogWriter::new(log::create(utils::datafile_name(
             self.ctx.path.as_path(),
@@ -420,7 +420,7 @@ impl BitCaskWriter {
 
     /// Add the given amount to the number of written bytes and open a new active data file when
     /// reaches the data file size threshold
-    fn collect_written(&mut self, sz: u64) -> Result<(), BitCaskError> {
+    fn collect_written(&mut self, sz: u64) -> Result<(), BitcaskError> {
         self.written += sz;
         if self.written > self.ctx.conf.max_datafile_size {
             self.new_active_datafile(self.active_fileid + 1)?;
@@ -430,7 +430,7 @@ impl BitCaskWriter {
 
     /// Add the given amount to the number of garbage bytes and perform merge when reaches
     /// garbage threshold.
-    fn collect_garbage(&mut self, sz: u64) -> Result<(), BitCaskError> {
+    fn collect_garbage(&mut self, sz: u64) -> Result<(), BitcaskError> {
         self.garbage += sz;
         if self.garbage > self.ctx.conf.max_garbage_size {
             self.merge()?;
@@ -439,25 +439,25 @@ impl BitCaskWriter {
     }
 
     /// Ensure all data and metadata are synchronized with the physical disk.
-    fn sync_all(&mut self) -> Result<(), BitCaskError> {
+    fn sync_all(&mut self) -> Result<(), BitcaskError> {
         self.writer.sync_all()?;
         Ok(())
     }
 }
 
 #[derive(Debug)]
-struct BitCaskReader {
-    ctx: BitCaskContext,
+struct BitcaskReader {
+    ctx: BitcaskContext,
     readers: RefCell<LogDir>,
 }
 
-impl BitCaskReader {
+impl BitcaskReader {
     /// Get the value of a key and return it, if it exists, otherwise return return `None`.
     ///
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
+    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitcaskError> {
         match self.ctx.keydir.get(key) {
             Some(keydir_entry) => {
                 let mut readers = self.readers.borrow_mut();
@@ -481,7 +481,7 @@ impl BitCaskReader {
 
 /// Returns a list of sorted filed IDs by parsing the names of data files in the directory
 /// given by `path`.
-fn rebuild_index<P>(path: P) -> Result<(DashMap<Bytes, KeyDirEntry>, u64, u64), BitCaskError>
+fn rebuild_index<P>(path: P) -> Result<(DashMap<Bytes, KeyDirEntry>, u64, u64), BitcaskError>
 where
     P: AsRef<Path>,
 {
@@ -522,7 +522,7 @@ fn populate_keydir_with_hintfile(
     keydir: &DashMap<Bytes, KeyDirEntry>,
     file: fs::File,
     fileid: u64,
-) -> Result<(), BitCaskError> {
+) -> Result<(), BitcaskError> {
     let mut hintfile_iter = LogIterator::new(file)?;
     while let Some((_, entry)) = hintfile_iter.next::<HintFileEntry>()? {
         // Indices given by the hint file do not point to tombstones.
@@ -543,7 +543,7 @@ fn populate_keydir_with_datafile(
     keydir: &DashMap<Bytes, KeyDirEntry>,
     file: fs::File,
     fileid: u64,
-) -> Result<u64, BitCaskError> {
+) -> Result<u64, BitcaskError> {
     let mut garbage = 0;
     let mut datafile_iter = LogIterator::new(file)?;
     while let Some((datafile_index, datafile_entry)) = datafile_iter.next::<DataFileEntry>()? {
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn bitcask_seq_read_after_write_should_return_the_written_data() {
         let dir = tempfile::tempdir().unwrap();
-        let kv = BitCaskConfig::default()
+        let kv = BitcaskConfig::default()
             .concurrency(1)
             .open(dir.path())
             .unwrap();

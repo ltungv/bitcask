@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use criterion::black_box;
 use opal::engine::{
-    BitCaskConfig, BitCaskKeyValueStore, DashMapKeyValueStore, KeyValueStore, SledKeyValueStore,
+    BitcaskConfig, BitcaskKeyValueStore, DashMapKeyValueStore, KeyValueStore, SledKeyValueStore,
 };
 use rand::{
     distributions::{Standard, Uniform},
@@ -14,6 +14,13 @@ use rayon::{
 use tempfile::TempDir;
 
 pub type KeyValuePair = (Bytes, Bytes);
+
+#[derive(Debug)]
+pub enum EngineType {
+    Bitcask,
+    Sled,
+    DashMap,
+}
 
 pub fn concurrent_write_bulk_bench_iter<E>(
     (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
@@ -71,13 +78,13 @@ where
     });
 }
 
-pub fn get_bitcask() -> (BitCaskKeyValueStore, TempDir) {
+pub fn get_bitcask() -> (BitcaskKeyValueStore, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let bitcask = BitCaskConfig::default()
+    let bitcask = BitcaskConfig::default()
         .concurrency(num_cpus::get())
         .open(tmpdir.path())
         .unwrap();
-    let engine = BitCaskKeyValueStore::from(bitcask);
+    let engine = BitcaskKeyValueStore::from(bitcask);
     (engine, tmpdir)
 }
 
