@@ -1,11 +1,11 @@
 use std::{env, fs, net::IpAddr, path};
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use tokio::net::TcpListener;
 use tokio::signal;
 
 use opal::{
-    engine::{self, BitCaskConfig, BitCaskKeyValueStore, DashMapKeyValueStore, SledKeyValueStore},
+    engine::{BitcaskConfig, BitcaskKeyValueStore, DashMapKeyValueStore, SledKeyValueStore},
     net::Server,
     telemetry::{get_subscriber, init_subscriber},
 };
@@ -16,25 +16,32 @@ pub async fn main() -> Result<(), anyhow::Error> {
     let subscriber = get_subscriber("opald".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);
 
-    let args = Args::parse();
+    let cli = Cli::parse();
 
     // Bind a TCP listener
-    let listener = TcpListener::bind(&format!("{}:{}", args.host, args.port)).await?;
+    let listener = TcpListener::bind(&format!("{}:{}", cli.host, cli.port)).await?;
 
-    match args.typ {
-        engine::Type::BitCask => {
+    match cli.cmd {
+        Commands::Bitcask(args) => {
+            let mut conf = BitcaskConfig::default();
+            if let Some(n) = args.max_datafile_size {
+                conf.max_datafile_size(n);
+            }
+            if let Some(n) = args.max_garbage_size {
+                conf.max_garbage_size(n);
+            }
+            if let Some(n) = args.concurrency {
+                conf.concurrency(n);
+            }
+
             let db_dir = args.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
-            let storage = BitCaskKeyValueStore::from(
-                BitCaskConfig::default()
-                    .concurrency(args.nthreads)
-                    .open(db_dir)?,
-            );
+            let storage = BitcaskKeyValueStore::from(conf.open(db_dir)?);
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }
-        engine::Type::Sled => {
+        Commands::Sled(args) => {
             let db_dir = args.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
@@ -43,7 +50,7 @@ pub async fn main() -> Result<(), anyhow::Error> {
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }
-        engine::Type::DashMap => {
+        Commands::Inmem => {
             let storage = DashMapKeyValueStore::default();
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
@@ -54,26 +61,55 @@ pub async fn main() -> Result<(), anyhow::Error> {
 }
 
 /// A minimal Redis server
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[clap(name = "opal", version, author, long_about = None)]
-struct Args {
+struct Cli {
+    #[clap(subcommand)]
+    cmd: Commands,
+
     /// The host address of the server
     #[clap(long, default_value = "127.0.0.1")]
     host: IpAddr,
 
     /// The port number of the server
-    #[clap(long, default_value = "6379")]
+    #[clap(long, default_value_t = 6379)]
     port: u16,
+}
 
-    /// The key-value store engine used by the server
-    #[clap(long = "type", default_value = "bitcask")]
-    typ: engine::Type,
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the server using Bitcask storage engine
+    Bitcask(BitcaskArgs),
+
+    /// Run the server using sled.rs storage engine
+    Sled(SledArgs),
+
+    /// Run the server using an in-memory hashmap
+    Inmem,
+}
+
+#[derive(Args)]
+struct BitcaskArgs {
+    /// Maximum size of the active data file
+    #[clap(long)]
+    max_datafile_size: Option<u64>,
+
+    /// Maximum number of unused bytes before triggering a merge
+    #[clap(long)]
+    max_garbage_size: Option<u64>,
+
+    /// Number of concurrent reads the engine can handle
+    #[clap(long)]
+    concurrency: Option<usize>,
 
     /// Path to the database directory
     #[clap(long)]
     path: Option<path::PathBuf>,
+}
 
-    /// Number of threads used for parallelization
-    #[clap(long, default_value = "4")]
-    nthreads: usize,
+#[derive(Args)]
+struct SledArgs {
+    /// Path to the database directory
+    #[clap(long)]
+    path: Option<path::PathBuf>,
 }

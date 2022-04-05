@@ -13,22 +13,22 @@ async fn main() -> Result<(), anyhow::Error> {
     let subscriber = get_subscriber("opal".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);
 
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    let mut client = Client::connect(format!("{}:{}", args.host, args.port)).await?;
-    match args.cmd {
-        Command::Set { key, value } => {
+    let mut client = Client::connect(format!("{}:{}", cli.host, cli.port)).await?;
+    match cli.cmd {
+        Commands::Set { key, value } => {
             client.set(&key, value.into()).await?;
             println!("\"OK\"");
         }
-        Command::Get { key } => match client.get(&key).await? {
+        Commands::Get { key } => match client.get(&key).await? {
             Some(val) => match String::from_utf8(val.to_vec()) {
                 Ok(s) => println!("\"{}\"", s),
                 Err(_) => println!("{:?}", val),
             },
             None => println!("(nil)"),
         },
-        Command::Del { keys } => {
+        Commands::Del { keys } => {
             let n_deleted = client.del(&keys).await?;
             println!("(integer) {}", n_deleted);
         }
@@ -40,21 +40,21 @@ async fn main() -> Result<(), anyhow::Error> {
 /// A minimal Redis client
 #[derive(Parser)]
 #[clap(name = "opal", version, author, long_about = None)]
-struct Args {
+struct Cli {
     #[clap(subcommand)]
-    cmd: Command,
+    cmd: Commands,
 
     /// The host address of the server
     #[clap(long, default_value = "127.0.0.1")]
     host: Ipv4Addr,
 
     /// The port number of the server
-    #[clap(long, default_value = "6379")]
+    #[clap(long, default_value_t = 6379)]
     port: u16,
 }
 
 #[derive(Subcommand)]
-enum Command {
+enum Commands {
     /// Set key's value
     Set {
         #[clap(name = "KEY")]
