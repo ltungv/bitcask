@@ -228,38 +228,45 @@ mod tests {
     fn get_test_cases() -> Vec<(Frame, &'static [u8])> {
         vec![
             // simple strings
-            (Frame::SimpleString("OK".to_string()), b"+OK\r\n"),
+            (Frame::SimpleString("OK".to_string()), b"+OK\r\n".as_slice()),
             // errors
-            (Frame::Error("Error test".to_string()), b"-Error test\r\n"),
+            (
+                Frame::Error("Error test".to_string()),
+                b"-Error test\r\n".as_slice(),
+            ),
             (
                 Frame::Error(
                     "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
                 ),
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+                    .as_slice(),
             ),
             (
                 Frame::Error("ERR unknown command 'foobar'".to_string()),
-                b"-ERR unknown command 'foobar'\r\n",
+                b"-ERR unknown command 'foobar'\r\n".as_slice(),
             ),
             // bulk strings
-            (Frame::BulkString("hello".into()), b"$5\r\nhello\r\n"),
-            (Frame::BulkString(Bytes::new()), b"$0\r\n\r\n"),
+            (
+                Frame::BulkString("hello".into()),
+                b"$5\r\nhello\r\n".as_slice(),
+            ),
+            (Frame::BulkString(Bytes::new()), b"$0\r\n\r\n".as_slice()),
             (
                 Frame::BulkString("hello\nworld".into()),
-                b"$11\r\nhello\nworld\r\n",
+                b"$11\r\nhello\nworld\r\n.as_slice()",
             ),
             (
                 Frame::BulkString("hello\r\nworld".into()),
-                b"$12\r\nhello\r\nworld\r\n",
+                b"$12\r\nhello\r\nworld\r\n.as_slice()",
             ),
             // arrays
-            (Frame::Array(vec![]), b"*0\r\n"),
+            (Frame::Array(vec![]), b"*0\r\n".as_slice()),
             (
                 Frame::Array(vec![
                     Frame::BulkString("foo".into()),
                     Frame::BulkString("bar".into()),
                 ]),
-                b"*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",
+                b"*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n".as_slice(),
             ),
             (
                 Frame::Array(vec![
@@ -267,7 +274,7 @@ mod tests {
                     Frame::Integer(2),
                     Frame::Integer(3),
                 ]),
-                b"*3\r\n:1\r\n:2\r\n:3\r\n",
+                b"*3\r\n:1\r\n:2\r\n:3\r\n".as_slice(),
             ),
             (
                 Frame::Array(vec![
@@ -277,7 +284,7 @@ mod tests {
                     Frame::Integer(4),
                     Frame::BulkString("foobar".into()),
                 ]),
-                b"*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n",
+                b"*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n".as_slice(),
             ),
             (
                 Frame::Array(vec![
@@ -285,11 +292,11 @@ mod tests {
                     Frame::Null,
                     Frame::BulkString("bar".into()),
                 ]),
-                b"*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n",
+                b"*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n".as_slice(),
             ),
             // null
             // NOTE: We use the bulk string representation for null
-            (Frame::Null, b"$-1\r\n"),
+            (Frame::Null, b"$-1\r\n".as_slice()),
         ]
     }
 }
