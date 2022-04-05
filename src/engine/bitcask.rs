@@ -318,7 +318,8 @@ impl BitcaskWriter {
     /// files are deleted after the merge.
     fn merge(&mut self) -> Result<(), BitcaskError> {
         let path = self.ctx.path.as_path();
-        let merge_fileid = self.active_fileid + 1;
+        let min_merge_fileid = self.active_fileid + 1;
+        let mut merge_fileid = min_merge_fileid;
 
         // NOTE: we use an explicit scope here to control the lifetimes of `readers`,
         // `merge_datafile_writer` and `merge_hintfile_writer`. We drop the readers
@@ -356,14 +357,23 @@ impl BitcaskWriter {
                     pos: keydir_entry.pos,
                     key: keydir_entry.key().clone(),
                 })?;
+
+                if merge_pos > self.ctx.conf.max_file_size {
+                    merge_pos = 0;
+                    merge_fileid += 1;
+                    merge_datafile_writer =
+                        BufWriter::new(log::create(utils::datafile_name(path, merge_fileid))?);
+                    merge_hintfile_writer =
+                        LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
+                }
             }
             readers.drop_stale(merge_fileid);
         }
 
-        self.ctx.min_fileid.store(merge_fileid);
+        self.ctx.min_fileid.store(min_merge_fileid);
 
         // Remove stale files from system
-        let stale_fileids = utils::sorted_fileids(path)?.filter(|&id| id < merge_fileid);
+        let stale_fileids = utils::sorted_fileids(path)?.filter(|&id| id < min_merge_fileid);
         for id in stale_fileids {
             if let Err(e) = fs::remove_file(utils::hintfile_name(path, id)) {
                 if e.kind() != io::ErrorKind::NotFound {
@@ -377,7 +387,7 @@ impl BitcaskWriter {
             }
         }
 
-        self.new_active_datafile(self.active_fileid + 2)?;
+        self.new_active_datafile(merge_fileid + 1)?;
         self.dead_bytes = 0;
         Ok(())
     }
