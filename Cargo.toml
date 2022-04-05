@@ -16,6 +16,7 @@ crossbeam = "0.8"
 dashmap = "5"
 memmap2 = "0.5"
 num_cpus = "1"
+parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 sled = "0.34"
 thiserror = "1"

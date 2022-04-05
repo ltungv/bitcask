@@ -9,12 +9,13 @@ use std::{
     fs,
     io::{self, BufWriter},
     path::{self, Path},
-    sync::{atomic, Arc, Mutex},
+    sync::Arc,
 };
 
 use bytes::Bytes;
-use crossbeam::{queue::ArrayQueue, utils::Backoff};
+use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error};
@@ -137,7 +138,7 @@ impl BitCask {
         let ctx = BitCaskContext {
             conf: Arc::new(conf.clone()),
             path: Arc::new(path.as_ref().to_path_buf()),
-            min_fileid: Arc::new(atomic::AtomicU64::new(0)),
+            min_fileid: Arc::new(AtomicCell::new(0)),
             keydir: Arc::new(keydir),
         };
 
@@ -165,11 +166,11 @@ impl BitCask {
     }
 
     fn put(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, BitCaskError> {
-        self.writer.lock().unwrap().put(key, value)
+        self.writer.lock().put(key, value)
     }
 
     fn delete(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
-        self.writer.lock().unwrap().delete(key)
+        self.writer.lock().delete(key)
     }
 
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
@@ -188,11 +189,11 @@ impl BitCask {
     }
 
     fn merge(&self) -> Result<(), BitCaskError> {
-        self.writer.lock().unwrap().merge()
+        self.writer.lock().merge()
     }
 
     fn sync_all(&self) -> Result<(), BitCaskError> {
-        self.writer.lock().unwrap().sync_all()
+        self.writer.lock().sync_all()
     }
 }
 
@@ -223,7 +224,7 @@ struct DataFileEntry {
 struct BitCaskContext {
     conf: Arc<BitCaskConfig>,
     path: Arc<path::PathBuf>,
-    min_fileid: Arc<atomic::AtomicU64>,
+    min_fileid: Arc<AtomicCell<u64>>,
     keydir: Arc<DashMap<Bytes, KeyDirEntry>>,
 }
 
@@ -352,9 +353,7 @@ impl BitCaskWriter {
             readers.drop_stale(merge_fileid);
         }
 
-        self.ctx
-            .min_fileid
-            .store(merge_fileid, atomic::Ordering::Release);
+        self.ctx.min_fileid.store(merge_fileid);
 
         // Remove stale files from system
         let stale_fileids = utils::sorted_fileids(path)?.filter(|&id| id < merge_fileid);
@@ -462,7 +461,7 @@ impl BitCaskReader {
         match self.ctx.keydir.get(key) {
             Some(keydir_entry) => {
                 let mut readers = self.readers.borrow_mut();
-                readers.drop_stale(self.ctx.min_fileid.load(atomic::Ordering::Acquire));
+                readers.drop_stale(self.ctx.min_fileid.load());
 
                 // SAFETY: We have taken `keydir_entry` from KeyDir which is ensured to point to
                 // valid data file positions. Thus we can be confident that the Mmap won't be
