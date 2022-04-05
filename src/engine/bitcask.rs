@@ -63,7 +63,7 @@ pub enum BitcaskError {
 /// Configuration for a `Bitcask` instance.
 #[derive(Debug, Clone)]
 pub struct BitcaskConfig {
-    max_datafile_size: ByteSize,
+    max_file_size: ByteSize,
     max_garbage_size: ByteSize,
     concurrency: usize,
 }
@@ -79,7 +79,7 @@ impl BitcaskConfig {
 
     /// Set the max data file size. The writer will open a new data file when reaches this value.
     pub fn max_datafile_size(&mut self, max_datafile_size: ByteSize) -> &mut Self {
-        self.max_datafile_size = max_datafile_size;
+        self.max_file_size = max_datafile_size;
         self
     }
 
@@ -100,7 +100,7 @@ impl Default for BitcaskConfig {
         let max_datafile_size = ByteSize::gib(2); // 2 GiBs
         let max_garbage_size = ByteSize(max_datafile_size.as_u64() * 30 / 100); // 2 GiBs * 30%
         Self {
-            max_datafile_size,
+            max_file_size: max_datafile_size,
             max_garbage_size,
             concurrency: num_cpus::get_physical(),
         }
@@ -422,7 +422,7 @@ impl BitcaskWriter {
     /// reaches the data file size threshold
     fn collect_written(&mut self, sz: u64) -> Result<(), BitcaskError> {
         self.written += sz;
-        if self.written > self.ctx.conf.max_datafile_size {
+        if self.written > self.ctx.conf.max_file_size {
             self.new_active_datafile(self.active_fileid + 1)?;
         }
         Ok(())
