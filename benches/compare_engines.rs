@@ -177,27 +177,15 @@ pub fn bench_read(c: &mut Criterion) {
 
     {
         let (engine, _tmpdir) = get_bitcask();
-        g.bench_with_input(
-            "bitcask",
-            &(&kv_pairs, engine),
-            sequential_read_bulk_bench,
-        );
+        g.bench_with_input("bitcask", &(&kv_pairs, engine), sequential_read_bulk_bench);
     }
     {
         let (engine, _tmpdir) = get_sled();
-        g.bench_with_input(
-            "sled",
-            &(&kv_pairs, engine),
-            sequential_read_bulk_bench,
-        );
+        g.bench_with_input("sled", &(&kv_pairs, engine), sequential_read_bulk_bench);
     }
     {
         let (engine, _tmpdir) = get_dashmap();
-        g.bench_with_input(
-            "dashmap",
-            &(&kv_pairs, engine),
-            sequential_read_bulk_bench,
-        );
+        g.bench_with_input("dashmap", &(&kv_pairs, engine), sequential_read_bulk_bench);
     }
     g.finish();
 }
