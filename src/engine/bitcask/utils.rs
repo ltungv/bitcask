@@ -67,6 +67,7 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
+        #[test]
         fn fileids_sorted_correctly(n in 0..100u64) {
             // keep the file handles until end of scope
             let mut tmps = Vec::new();

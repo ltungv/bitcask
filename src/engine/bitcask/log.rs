@@ -209,6 +209,7 @@ mod tests {
     use super::*;
 
     proptest! {
+        #[test]
         fn writer_position_updated_after_write(buf in vec(any::<u8>(), 0..2048)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
@@ -221,9 +222,8 @@ mod tests {
             prop_assert_eq!(idx1.len, idx2.pos);
             prop_assert_eq!(idx1.len, idx2.len);
         }
-    }
 
-    proptest! {
+        #[test]
         fn reader_reads_entry_written_by_writer(buf in vec(any::<u8>(), 0..2048)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
@@ -239,9 +239,8 @@ mod tests {
             prop_assert_eq!(&buf, &buf1);
             prop_assert_eq!(&buf, &buf2);
         }
-    }
 
-    proptest! {
+        #[test]
         fn reader_should_remap_disk_when_file_changed(buf in vec(any::<u8>(), 0..2048)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
