@@ -28,8 +28,8 @@ pub async fn main() -> Result<(), anyhow::Error> {
             if let Some(n) = args.max_datafile_size {
                 conf.max_datafile_size(n);
             }
-            if let Some(n) = args.max_garbage_size {
-                conf.max_garbage_size(n);
+            if let Some(n) = args.max_deadbytes {
+                conf.max_dead_bytes(n);
             }
             if let Some(n) = args.concurrency {
                 conf.concurrency(n);
@@ -97,7 +97,7 @@ struct BitcaskArgs {
 
     /// Maximum number of unused bytes before triggering a merge
     #[clap(long)]
-    max_garbage_size: Option<ByteSize>,
+    max_deadbytes: Option<ByteSize>,
 
     /// Number of concurrent reads the engine can handle
     #[clap(long)]

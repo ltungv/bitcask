@@ -13,7 +13,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use bytesize::ByteSize;
+use bytesize::{ByteSize, GIB, MIB};
 use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -22,7 +22,7 @@ use thiserror::Error;
 use tracing::{debug, error};
 
 use super::KeyValueStore;
-use log::{LogDir, LogIndex, LogIterator, LogWriter};
+use log::{LogDir, LogIterator, LogWriter};
 
 /// A wrapper around [`Bitcask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
@@ -60,11 +60,18 @@ pub enum BitcaskError {
     Serialization(#[from] bincode::Error),
 }
 
+/// Bitcask data files merge strategy.
+#[derive(Debug, Clone)]
+pub enum BitcaskMergeStrategy {
+    /// The data files are merged when the number of current dead bytes reaches this value
+    DeadBytes(u64),
+}
+
 /// Configuration for a `Bitcask` instance.
 #[derive(Debug, Clone)]
 pub struct BitcaskConfig {
-    max_file_size: ByteSize,
-    max_garbage_size: ByteSize,
+    max_file_size: u64,
+    merge_strategy: BitcaskMergeStrategy,
     concurrency: usize,
 }
 
@@ -79,13 +86,20 @@ impl BitcaskConfig {
 
     /// Set the max data file size. The writer will open a new data file when reaches this value.
     pub fn max_datafile_size(&mut self, max_datafile_size: ByteSize) -> &mut Self {
-        self.max_file_size = max_datafile_size;
+        self.max_file_size = max_datafile_size.as_u64();
         self
     }
 
-    /// Set the max garbage size. The writer will merge data files when reaches this value.
-    pub fn max_garbage_size(&mut self, max_garbage_size: ByteSize) -> &mut Self {
-        self.max_garbage_size = max_garbage_size;
+    /// Set the merge strategy. The writer will merge data files when the conditions defined by the
+    /// given strategy are met.
+    pub fn marge_strategy(&mut self, merge_strategy: BitcaskMergeStrategy) -> &mut Self {
+        self.merge_strategy = merge_strategy;
+        self
+    }
+
+    /// Set the merge strategy to max dead bytes.
+    pub fn max_dead_bytes(&mut self, max_deadbytes: ByteSize) -> &mut Self {
+        self.merge_strategy = BitcaskMergeStrategy::DeadBytes(max_deadbytes.as_u64());
         self
     }
 
@@ -97,12 +111,12 @@ impl BitcaskConfig {
 }
 impl Default for BitcaskConfig {
     fn default() -> Self {
-        let max_datafile_size = ByteSize::gib(2); // 2 GiBs
-        let max_garbage_size = ByteSize(max_datafile_size.as_u64() * 30 / 100); // 2 GiBs * 30%
+        let max_file_size = 2 * GIB; // 2 GiBs
+        let merge_strategy = BitcaskMergeStrategy::DeadBytes(512 * MIB); // 512 MiBs
         Self {
-            max_file_size: max_datafile_size,
-            max_garbage_size,
-            concurrency: num_cpus::get_physical(),
+            max_file_size,
+            merge_strategy,
+            concurrency: num_cpus::get(),
         }
     }
 }
@@ -159,8 +173,8 @@ impl Bitcask {
             readers: RefCell::default(),
             writer,
             active_fileid,
-            written: 0,
-            garbage,
+            written_bytes: 0,
+            dead_bytes: garbage,
         }));
 
         Ok(Bitcask { writer, readers })
@@ -235,8 +249,8 @@ struct BitcaskWriter {
     readers: RefCell<LogDir>,
     writer: LogWriter,
     active_fileid: u64,
-    written: u64,
-    garbage: u64,
+    written_bytes: u64,
+    dead_bytes: u64,
 }
 
 impl BitcaskWriter {
@@ -263,7 +277,7 @@ impl BitcaskWriter {
 
                 // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
                 // we invalidate the returned file position.
-                self.collect_garbage(prev_keydir_entry.len)?;
+                self.collect_deadbytes(prev_keydir_entry.len)?;
 
                 Ok(prev_datafile_entry.value)
             }
@@ -292,7 +306,7 @@ impl BitcaskWriter {
 
                 // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
                 // we invalidate the returned file position.
-                self.collect_garbage(prev_keydir_entry.len)?;
+                self.collect_deadbytes(prev_keydir_entry.len)?;
 
                 Ok(prev_datafile_entry.value)
             }
@@ -364,7 +378,7 @@ impl BitcaskWriter {
         }
 
         self.new_active_datafile(self.active_fileid + 2)?;
-        self.garbage = 0;
+        self.dead_bytes = 0;
         Ok(())
     }
 
@@ -402,7 +416,7 @@ impl BitcaskWriter {
         };
 
         let index = self.writer.append(&entry)?;
-        self.garbage += index.len; // tombstones are wasted space
+        self.dead_bytes += index.len; // tombstones are wasted space
         self.collect_written(index.len)?;
         Ok(())
     }
@@ -414,15 +428,15 @@ impl BitcaskWriter {
             self.ctx.path.as_path(),
             self.active_fileid,
         ))?)?;
-        self.written = 0;
+        self.written_bytes = 0;
         Ok(())
     }
 
     /// Add the given amount to the number of written bytes and open a new active data file when
     /// reaches the data file size threshold
     fn collect_written(&mut self, sz: u64) -> Result<(), BitcaskError> {
-        self.written += sz;
-        if self.written > self.ctx.conf.max_file_size {
+        self.written_bytes += sz;
+        if self.written_bytes > self.ctx.conf.max_file_size {
             self.new_active_datafile(self.active_fileid + 1)?;
         }
         Ok(())
@@ -430,9 +444,10 @@ impl BitcaskWriter {
 
     /// Add the given amount to the number of garbage bytes and perform merge when reaches
     /// garbage threshold.
-    fn collect_garbage(&mut self, sz: u64) -> Result<(), BitcaskError> {
-        self.garbage += sz;
-        if self.garbage > self.ctx.conf.max_garbage_size {
+    fn collect_deadbytes(&mut self, sz: u64) -> Result<(), BitcaskError> {
+        self.dead_bytes += sz;
+        let BitcaskMergeStrategy::DeadBytes(n) = self.ctx.conf.merge_strategy;
+        if self.dead_bytes > n {
             self.merge()?;
         }
         Ok(())

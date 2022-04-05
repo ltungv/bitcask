@@ -80,10 +80,7 @@ where
 
 pub fn get_bitcask() -> (BitcaskKeyValueStore, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let bitcask = BitcaskConfig::default()
-        .concurrency(num_cpus::get())
-        .open(tmpdir.path())
-        .unwrap();
+    let bitcask = BitcaskConfig::default().open(tmpdir.path()).unwrap();
     let engine = BitcaskKeyValueStore::from(bitcask);
     (engine, tmpdir)
 }
