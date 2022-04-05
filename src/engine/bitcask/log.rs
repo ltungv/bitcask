@@ -37,19 +37,6 @@ where
 pub struct LogDir(BTreeMap<u64, LogReader>);
 
 impl LogDir {
-    /// Deserialize a data entry given the directory path and the file position
-    pub fn read<T, P>(&mut self, path: P, fileid: u64, len: u64, pos: u64) -> bincode::Result<T>
-    where
-        T: DeserializeOwned,
-        P: AsRef<Path>,
-    {
-        // NOTE: Unsafe usage.
-        // We ensure in `BitCaskWriter` that all log entries given by KeyDir are written disk,
-        // thus the readers can safely use memmap to access the data file randomly.
-        let prev_datafile_entry = unsafe { self.get(path, fileid)?.at::<T>(len, pos)? };
-        Ok(prev_datafile_entry)
-    }
-
     /// Return the reader of the file with the given `fileid`. If there's no reader for the file
     /// with the given `fileid`, create a new reader and return it.
     pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&mut LogReader>
@@ -127,19 +114,24 @@ pub struct LogReader {
 impl LogReader {
     /// Create a new log reader for reading entries from the given file.
     pub fn new(file: fs::File) -> io::Result<Self> {
+        // SAFETY: We just create a Mmap without doing any read so there's nothing to worry about.
+        // All methods that access `LogReader` MUST be maked unsafe since the caller is responsible
+        // for providing a valid file position.
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
         Ok(Self { mmap, file })
     }
 
     /// Return the entry at the given position by mapping the file segment directly into memory.
     ///
-    /// # Unsafe
+    /// # Safety
     ///
     /// The caller must ensure that the file segment given by `len` and `pos` is valid.
     pub unsafe fn at<T>(&mut self, len: u64, pos: u64) -> bincode::Result<T>
     where
         T: DeserializeOwned,
     {
+        // We assume that the caller always provide a valid data entry so we can expand the Mmap
+        // and try reading with the `len` and `pos`.
         if pos >= self.mmap.len() as u64 {
             self.mmap = memmap2::MmapOptions::new().map(&self.file)?;
         }
@@ -151,13 +143,15 @@ impl LogReader {
     /// Copy the raw data at the given position into the writer at `dst` by mapping the file segment
     /// directly into memory.
     ///
-    /// # Unsafe
+    /// # Safety
     ///
     /// The caller must ensure that the file segment given by `len` and `pos` is valid.
     pub unsafe fn copy_raw<W>(&mut self, len: u64, pos: u64, dst: &mut W) -> io::Result<u64>
     where
         W: Write,
     {
+        // We assume that the caller always provide a valid data entry so we can expand the Mmap
+        // and try reading with the `len` and `pos`.
         if pos >= self.mmap.len() as u64 {
             self.mmap = memmap2::MmapOptions::new().map(&self.file)?;
         }
@@ -267,9 +261,8 @@ mod tests {
             prop_assert_eq!(&buf, &buf3);
             prop_assert_eq!(&buf, &buf4);
         }
-    }
 
-    proptest! {
+        #[test]
         fn reader_iterates_entries_written_by_writer(entries in vec(vec(any::<u8>(), 0..2048), 1..100)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");

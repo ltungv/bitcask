@@ -1,8 +1,4 @@
-//! An implementation of [Bitcask]. This is essentially similar to [`engine::LogStructuredHashTable`],
-//! but here we closely follow the design described in the paper and try to provide a similar set of APIs.
-//!
-//! [Bitcask]: (https://riak.com/assets/bitcask-intro.pdf).
-//! [`engine::LogStructuredHashTable`]: opal::engine::LogStructuredHashTable
+//! An implementation of [Bitcask](https://riak.com/assets/bitcask-intro.pdf).
 
 mod bufio;
 mod log;
@@ -109,15 +105,24 @@ impl Default for BitCaskConfig {
     }
 }
 
-/// Implementation of Bitcask.
+/// Implementation of a Bitcask instance.
+///
+/// The APIs resembles the one given in [bitcask-intro.pdf](https://riak.com/assets/bitcask-intro.pdf)
+/// with a few functions omitted.
 ///
 /// Each Bitcask instance is a directory containing data files. At any moment, one file is "active"
-/// for writing, and Bitcask ensures that writes are sequentially consistent. Data files are
-/// append-only, and Bitcask keeps a "keydir" that maps the key to the position of its value in the
-/// data files allowing for random data access.
+/// for writing, and Bitcask sequentially appends data to the active data file. Bitcask keeps a
+/// "keydir" that maps a key to the position of its value in the data files and uses the keydir to
+/// access the data file entries directly without having to scan all data files.
 #[derive(Clone, Debug)]
 pub struct BitCask {
+    /// A mutex-protected writer used for appending data entry to the active data files. All
+    /// operations that make changes to the active data file are delegated to this object.
     writer: Arc<Mutex<BitCaskWriter>>,
+
+    /// A readers queue for parallelizing read-access to the key-value store. Upon a read-access,
+    /// a reader is taken from the queue and used for reading the data files. Once we finish
+    /// reading, the read is returned back to the queue.
     readers: Arc<ArrayQueue<BitCaskReader>>,
 }
 
@@ -233,7 +238,8 @@ struct BitCaskWriter {
 }
 
 impl BitCaskWriter {
-    /// Set the value of a key, overwriting any existing value at that key.
+    /// Set the value of a key and overwrite any existing value. If a value is overwritten
+    /// return it, otherwise return None.
     ///
     /// # Error
     ///
@@ -251,39 +257,49 @@ impl BitCaskWriter {
             },
         ) {
             Some(prev_keydir_entry) => {
-                let prev_datafile_entry = self.readers.borrow_mut().read::<DataFileEntry, _>(
-                    self.ctx.path.as_path(),
-                    prev_keydir_entry.fileid,
-                    prev_keydir_entry.len,
-                    prev_keydir_entry.pos,
-                )?;
-                // NOTE: we have to collect garbage after reading the entry from disk otherwise
-                // we invalidate returned file position.
+                // SAFETY: We have taken `prev_keydir_entry` from KeyDir which is ensured to point
+                // to valid data file positions. Thus we can be confident that the Mmap won't be
+                // mapped to an invalid segment.
+                let prev_datafile_entry = unsafe {
+                    self.readers
+                        .borrow_mut()
+                        .get(self.ctx.path.as_path(), prev_keydir_entry.fileid)?
+                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
+                };
+
+                // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
+                // we invalidate the returned file position.
                 self.collect_garbage(prev_keydir_entry.len)?;
+
                 Ok(prev_datafile_entry.value)
             }
             None => Ok(None),
         }
     }
 
-    /// Delete a key and its value, if it exists.
+    /// Delete a key and returning its value, if it exists, otherwise return `None`.
     ///
     /// # Error
     ///
-    /// If the deleted key does not exist, returns an error of kind `ErrorKind::KeyNotFound`.
     /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn delete(&mut self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
+        self.put_tombstone(utils::timestamp(), key)?;
         match self.ctx.keydir.remove(key) {
             Some((_, prev_keydir_entry)) => {
-                let prev_datafile_entry = self.readers.borrow_mut().read::<DataFileEntry, _>(
-                    self.ctx.path.as_path(),
-                    prev_keydir_entry.fileid,
-                    prev_keydir_entry.len,
-                    prev_keydir_entry.pos,
-                )?;
-                // NOTE: we have to remove the index before writing a tombstone
-                self.put_tombstone(utils::timestamp(), key)?;
+                // SAFETY: We have taken `prev_keydir_entry` from KeyDir which is ensured to point
+                // to valid data file positions. Thus we can be confident that the Mmap won't be
+                // mapped to an invalid segment.
+                let prev_datafile_entry = unsafe {
+                    self.readers
+                        .borrow_mut()
+                        .get(self.ctx.path.as_path(), prev_keydir_entry.fileid)?
+                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
+                };
+
+                // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
+                // we invalidate the returned file position.
                 self.collect_garbage(prev_keydir_entry.len)?;
+
                 Ok(prev_datafile_entry.value)
             }
             None => Ok(None),
@@ -437,17 +453,26 @@ struct BitCaskReader {
 }
 
 impl BitCaskReader {
+    /// Get the value of a key and return it, if it exists, otherwise return return `None`.
+    ///
+    /// # Error
+    ///
+    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, BitCaskError> {
         match self.ctx.keydir.get(key) {
             Some(keydir_entry) => {
                 let mut readers = self.readers.borrow_mut();
                 readers.drop_stale(self.ctx.min_fileid.load(atomic::Ordering::Acquire));
-                let datafile_entry = readers.read::<DataFileEntry, _>(
-                    self.ctx.path.as_path(),
-                    keydir_entry.fileid,
-                    keydir_entry.len,
-                    keydir_entry.pos,
-                )?;
+
+                // SAFETY: We have taken `keydir_entry` from KeyDir which is ensured to point to
+                // valid data file positions. Thus we can be confident that the Mmap won't be
+                // mapped to an invalid segment.
+                let datafile_entry = unsafe {
+                    readers
+                        .get(self.ctx.path.as_path(), keydir_entry.fileid)?
+                        .at::<DataFileEntry>(keydir_entry.len, keydir_entry.pos)?
+                };
+
                 Ok(datafile_entry.value)
             }
             None => Ok(None),
@@ -541,4 +566,27 @@ fn populate_keydir_with_datafile(
         }
     }
     Ok(garbage)
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::{collection, prelude::*};
+
+    use super::*;
+
+    #[test]
+    fn bitcask_seq_read_after_write_should_return_the_written_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let kv = BitCaskConfig::default()
+            .concurrency(1)
+            .open(dir.path())
+            .unwrap();
+
+        proptest!(|(key in collection::vec(any::<u8>(), 0..64),
+                    value in collection::vec(any::<u8>(), 0..256))| {
+            kv.put(Bytes::from(key.clone()), Bytes::from(value.clone())).unwrap();
+            let value_from_kv = kv.get(&Bytes::from(key)).unwrap();
+            prop_assert_eq!(Some(Bytes::from(value)), value_from_kv);
+        });
+    }
 }

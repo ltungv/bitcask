@@ -20,24 +20,12 @@ pub trait KeyValueStore: Clone + Send + 'static {
 
     /// Set the value of a key, overwriting any existing value at that key and return the overwritten
     /// value
-    ///
-    /// # Error
-    ///
-    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error>;
 
     /// Get the value of a key, if it exists. Return `None` if there's no value for the given key
-    ///
-    /// # Error
-    ///
-    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error>;
 
     /// Delete a key and return its value, if it exists. Return `None` if the key does not exist
-    ///
-    /// # Error
-    ///
-    /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error>;
 }
 
