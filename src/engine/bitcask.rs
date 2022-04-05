@@ -99,7 +99,7 @@ impl BitCaskConfig {
 }
 impl Default for BitCaskConfig {
     fn default() -> Self {
-        let max_datafile_size: u64 = 2 * 1024 * 1024 * 1024; // 2 GBs
+        let max_datafile_size = 2 * 1024 * 1024 * 1024; // 2 GBs
         let max_garbage_size = max_datafile_size * 30 / 100; // 2 Gbs * 30%
         Self {
             max_datafile_size,
@@ -464,7 +464,7 @@ where
     let keydir = DashMap::default();
     let fileids = utils::sorted_fileids(&path)?;
 
-    let mut active_fileid: Option<u64> = None;
+    let mut active_fileid = None;
     let mut garbage = 0;
     for fileid in fileids {
         match &mut active_fileid {
