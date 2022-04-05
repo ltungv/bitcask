@@ -64,24 +64,23 @@ pub fn timestamp() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quickcheck::quickcheck;
+    use proptest::prelude::*;
 
-    quickcheck! {
-        fn fileids_sorted_correctly(n: u64) -> bool {
+    proptest! {
+        fn fileids_sorted_correctly(n in 0..100u64) {
             // keep the file handles until end of scope
             let mut tmps = Vec::new();
             // Create random datafiles and hintfiles in the directory
             let dir = tempfile::tempdir().unwrap();
-            for fileid in 0..n.min(100) {
+            for fileid in 0..n {
                 tmps.push(fs::File::create(datafile_name(&dir, fileid)).unwrap());
                 if rand::random() {
                     tmps.push(fs::File::create(hintfile_name(&dir, fileid)).unwrap());
                 }
             }
-
             // check if ids are sorted
             let fileids = sorted_fileids(dir).unwrap();
-            fileids.enumerate().all(|(i, v)| i as u64 == v)
+            prop_assert!(fileids.enumerate().all(|(i, v)| i as u64 == v))
         }
     }
 }

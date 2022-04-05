@@ -204,12 +204,12 @@ impl LogIterator {
 
 #[cfg(test)]
 mod tests {
-    use quickcheck::quickcheck;
+    use proptest::{collection::vec, prelude::*};
 
     use super::*;
 
-    quickcheck! {
-        fn writer_position_updated_after_write(buf: Vec<u8>) -> bool {
+    proptest! {
+        fn writer_position_updated_after_write(buf in vec(any::<u8>(), 0..2048)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             // write the entry
@@ -217,12 +217,14 @@ mod tests {
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
             // succeed if we received the correct index
-            idx1.pos == 0 && idx1.len == idx2.pos && idx1.len == idx2.len
+            prop_assert_eq!(idx1.pos, 0);
+            prop_assert_eq!(idx1.len, idx2.pos);
+            prop_assert_eq!(idx1.len, idx2.len);
         }
     }
 
-    quickcheck! {
-        fn reader_reads_entry_written_by_writer(buf: Vec<u8>) -> bool {
+    proptest! {
+        fn reader_reads_entry_written_by_writer(buf in vec(any::<u8>(), 0..2048)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             // write the entry
@@ -234,11 +236,13 @@ mod tests {
             let buf1 = unsafe { reader.at::<Vec<u8>>(idx1.len, idx1.pos).unwrap() };
             let buf2 = unsafe { reader.at::<Vec<u8>>(idx2.len, idx2.pos).unwrap() };
             // succeed if we received the correct data given the positions
-            buf == buf1 && buf == buf2
+            prop_assert_eq!(&buf, &buf1);
+            prop_assert_eq!(&buf, &buf2);
         }
     }
-    quickcheck! {
-        fn reader_should_remap_disk_when_file_changed(buf: Vec<u8>) -> bool {
+
+    proptest! {
+        fn reader_should_remap_disk_when_file_changed(buf in vec(any::<u8>(), 0..2048)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
@@ -259,12 +263,15 @@ mod tests {
             let buf4 = unsafe { reader.at::<Vec<u8>>(idx4.len, idx4.pos).unwrap() };
 
             // succeed if we received the correct data given the positions
-            buf == buf1 && buf == buf2 && buf == buf3 && buf == buf4
+            prop_assert_eq!(&buf, &buf1);
+            prop_assert_eq!(&buf, &buf2);
+            prop_assert_eq!(&buf, &buf3);
+            prop_assert_eq!(&buf, &buf4);
         }
     }
 
-    quickcheck! {
-        fn reader_iterates_entries_written_by_writer(entries: Vec<Vec<u8>>) -> bool {
+    proptest! {
+        fn reader_iterates_entries_written_by_writer(entries in vec(vec(any::<u8>(), 0..2048), 1..100)) {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             // write the entries
@@ -275,16 +282,11 @@ mod tests {
             let mut iter = LogIterator::new(open(&fpath).unwrap()).unwrap();
             for (idx, buf) in indices.iter().zip(entries) {
                 let (idx_from_reader, buf_from_reader) = iter.next::<Vec<u8>>().unwrap().unwrap();
-                if *idx != idx_from_reader || buf != buf_from_reader {
-                    return false;
-                }
+                prop_assert_eq!(idx, &idx_from_reader);
+                prop_assert_eq!(&buf, &buf_from_reader);
                 let buf_from_reader = unsafe { reader.at::<Vec<u8>>(idx_from_reader.len, idx_from_reader.pos).unwrap() };
-                if buf != buf_from_reader {
-                    return false;
-                }
+                prop_assert_eq!(&buf, &buf_from_reader);
             }
-            // succeed if we could iterate over all written data and received the correct indices
-            true
         }
     }
 }
