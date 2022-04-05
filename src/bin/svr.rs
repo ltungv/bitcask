@@ -25,10 +25,10 @@ pub async fn main() -> Result<(), anyhow::Error> {
     match cli.cmd {
         Commands::Bitcask(args) => {
             let mut conf = BitcaskConfig::default();
-            if let Some(n) = args.max_datafile_size {
-                conf.max_datafile_size(n);
+            if let Some(n) = args.max_file_size {
+                conf.max_file_size(n);
             }
-            if let Some(n) = args.max_deadbytes {
+            if let Some(n) = args.max_dead_bytes {
                 conf.max_dead_bytes(n);
             }
             if let Some(n) = args.concurrency {
@@ -93,11 +93,11 @@ enum Commands {
 struct BitcaskArgs {
     /// Maximum size of the active data file
     #[clap(long)]
-    max_datafile_size: Option<ByteSize>,
+    max_file_size: Option<ByteSize>,
 
     /// Maximum number of unused bytes before triggering a merge
     #[clap(long)]
-    max_deadbytes: Option<ByteSize>,
+    max_dead_bytes: Option<ByteSize>,
 
     /// Number of concurrent reads the engine can handle
     #[clap(long)]

@@ -85,8 +85,8 @@ impl BitcaskConfig {
     }
 
     /// Set the max data file size. The writer will open a new data file when reaches this value.
-    pub fn max_datafile_size(&mut self, max_datafile_size: ByteSize) -> &mut Self {
-        self.max_file_size = max_datafile_size.as_u64();
+    pub fn max_file_size(&mut self, max_file_size: ByteSize) -> &mut Self {
+        self.max_file_size = max_file_size.as_u64();
         self
     }
 
@@ -98,8 +98,8 @@ impl BitcaskConfig {
     }
 
     /// Set the merge strategy to max dead bytes.
-    pub fn max_dead_bytes(&mut self, max_deadbytes: ByteSize) -> &mut Self {
-        self.merge_strategy = BitcaskMergeStrategy::DeadBytes(max_deadbytes.as_u64());
+    pub fn max_dead_bytes(&mut self, max_dead_bytes: ByteSize) -> &mut Self {
+        self.merge_strategy = BitcaskMergeStrategy::DeadBytes(max_dead_bytes.as_u64());
         self
     }
 
@@ -277,7 +277,7 @@ impl BitcaskWriter {
 
                 // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
                 // we invalidate the returned file position.
-                self.collect_deadbytes(prev_keydir_entry.len)?;
+                self.collect_dead_bytes(prev_keydir_entry.len)?;
 
                 Ok(prev_datafile_entry.value)
             }
@@ -306,7 +306,7 @@ impl BitcaskWriter {
 
                 // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
                 // we invalidate the returned file position.
-                self.collect_deadbytes(prev_keydir_entry.len)?;
+                self.collect_dead_bytes(prev_keydir_entry.len)?;
 
                 Ok(prev_datafile_entry.value)
             }
@@ -444,7 +444,7 @@ impl BitcaskWriter {
 
     /// Add the given amount to the number of garbage bytes and perform merge when reaches
     /// garbage threshold.
-    fn collect_deadbytes(&mut self, sz: u64) -> Result<(), BitcaskError> {
+    fn collect_dead_bytes(&mut self, sz: u64) -> Result<(), BitcaskError> {
         self.dead_bytes += sz;
         let BitcaskMergeStrategy::DeadBytes(n) = self.ctx.conf.merge_strategy;
         if self.dead_bytes > n {
