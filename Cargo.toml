@@ -8,7 +8,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-atoi = "1"
 bincode = "1"
 bytes = { version = "1", features = ["serde"] }
 bytesize = "1"

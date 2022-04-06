@@ -17,13 +17,21 @@ pub enum Error {
     #[error("Invalid frame encoding")]
     BadEncoding,
 
+    /// Parsed integer overflow i64 range
+    #[error("Parsed integer overflow i64 range")]
+    Overflow,
+
+    /// Parsed integer underflow i64 range
+    #[error("Parsed integer underflow i64 range")]
+    Underflow,
+
     /// The parsed length is invalid
     #[error("Found an invalid array/bulk-string length (got {0})")]
     BadLength(i64),
 
     /// Could not read bytes as integer
     #[error("Could not parse bytes as an integer (got {0:?})")]
-    NotInteger(String),
+    NotDigit(u8),
 
     /// Could not read bytes as utf8 string
     #[error("Could not parse bytes as an UTF-8 string - {0}")]
@@ -150,21 +158,73 @@ impl Frame {
     }
 }
 
+/// Read until we encounter '\r' then skip 2 spaces for '\r\n'
 fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
     let start = buf.position() as usize;
     let end = buf.get_ref().len() - 1;
     for i in start..end {
-        if buf.get_ref()[i] == b'\r' && buf.get_ref()[i + 1] == b'\n' {
-            buf.set_position((i + 2) as u64);
-            return Ok(&buf.get_ref()[start..i]);
+        match buf.get_ref()[i] {
+            b'\r' => {
+                buf.set_position((i + 2) as u64);
+                return Ok(&buf.get_ref()[start..i]);
+            }
+            b'\n' => return Err(Error::BadEncoding),
+            _ => {}
         }
     }
     Err(Error::Incomplete)
 }
 
+/// Read and adds digit until we encounter '\r' then skip 2 spaces for '\r\n'
 fn get_integer(buf: &mut Cursor<&[u8]>) -> Result<i64, Error> {
-    let l = get_line(buf)?;
-    atoi::atoi(l).ok_or_else(|| Error::NotInteger(String::from_utf8_lossy(l).into()))
+    let sign = match peek_byte(buf)? {
+        b'-' => {
+            skip(buf, 1)?;
+            -1
+        }
+        _ => 1,
+    };
+
+    let start = buf.position() as usize;
+    let end = buf.get_ref().len() - 1;
+    let mut n: i64 = 0;
+
+    for i in start..end {
+        match buf.get_ref()[i] {
+            b'\r' => {
+                if i == start {
+                    return Err(Error::NotDigit(b'\r'));
+                }
+                buf.set_position((i + 2) as u64);
+                return Ok(n);
+            }
+            b'\n' => return Err(Error::NotDigit(b'\n')),
+            b => {
+                let x = match b {
+                    b'0' => 0,
+                    b'1' => 1,
+                    b'2' => 2,
+                    b'3' => 3,
+                    b'4' => 4,
+                    b'5' => 5,
+                    b'6' => 6,
+                    b'7' => 7,
+                    b'8' => 8,
+                    b'9' => 9,
+                    _ => return Err(Error::NotDigit(b)),
+                };
+                n = n
+                    .checked_mul(10)
+                    .and_then(|n| n.checked_add(sign * x))
+                    .ok_or(if sign == -1 {
+                        Error::Underflow
+                    } else {
+                        Error::Overflow
+                    })?;
+            }
+        }
+    }
+    Err(Error::Incomplete)
 }
 
 fn get_byte(buf: &mut Cursor<&[u8]>) -> Result<u8, Error> {
@@ -196,16 +256,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_simple_string_valid() {
+    fn parse_simple_string_ok() {
         assert_frame(b"+OK\r\n", Frame::SimpleString("OK".to_string()));
-
-        // extraneous '\r' and '\n' will not affect parsing
-        assert_frame(b"+OK\r\r\n", Frame::SimpleString("OK\r".to_string()));
-        assert_frame(b"+OK\n\r\n", Frame::SimpleString("OK\n".to_string()));
     }
 
     #[test]
-    fn parse_error_valid() {
+    fn parse_simple_string_ignoring_carriage_return() {
+        // extraneous '\r' will not affect parsing of single frame
+        assert_frame(b"+OK\r\r\n", Frame::SimpleString("OK".to_string()));
+    }
+
+    #[test]
+    fn parse_simple_string_fails_because_line_feed() {
+        assert_frame_error(b"+OK\n\r\n", Error::BadEncoding);
+    }
+
+    #[test]
+    fn parse_error_ok() {
         assert_frame(b"-Error test\r\n", Frame::Error("Error test".to_string()));
         assert_frame(
             b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
@@ -217,48 +284,43 @@ mod tests {
             b"-ERR unknown command 'foobar'\r\n",
             Frame::Error("ERR unknown command 'foobar'".to_string()),
         );
-
-        // extraneous '\r' and '\n' will not affect parsing
-        assert_frame(
-            b"-Error test\r\r\n",
-            Frame::Error("Error test\r".to_string()),
-        );
-        assert_frame(
-            b"-Error test\n\r\n",
-            Frame::Error("Error test\n".to_string()),
-        );
     }
 
     #[test]
-    fn parse_integer_valid() {
+    fn parse_error_ignoring_carriage_return() {
+        // extraneous '\r' will not affect parsing of single frame
+        assert_frame(b"-Error test\r\r\n", Frame::Error("Error test".to_string()));
+    }
+
+    #[test]
+    fn parse_error_fails_because_line_feed() {
+        assert_frame_error(b"-Error test\n\r\n", Error::BadEncoding);
+    }
+
+    #[test]
+    fn parse_integer_ok() {
         assert_frame(b":1000\r\n", Frame::Integer(1000));
         assert_frame(b":-100\r\n", Frame::Integer(-100));
     }
 
     #[test]
-    fn parse_integer_invalid_empty_buffer() {
-        assert_frame_error(b":\r\n", Error::NotInteger("".into()));
+    fn parse_integer_fails_when_line_is_empty() {
+        assert_frame_error(b":\r\n", Error::NotDigit(b'\r'));
     }
 
     #[test]
-    fn parse_integer_invalid_non_digit_character() {
-        assert_frame_error(b":nan\r\n", Error::NotInteger("nan".into()));
+    fn parse_integer_fails_when_there_is_non_digit() {
+        assert_frame_error(b":nan\r\n", Error::NotDigit(b'n'));
     }
 
     #[test]
     fn parse_integer_invalid_value_underflow() {
-        assert_frame_error(
-            b":-9223372036854775809\r\n",
-            Error::NotInteger("-9223372036854775809".into()),
-        );
+        assert_frame_error(b":-9223372036854775809\r\n", Error::Underflow);
     }
 
     #[test]
     fn parse_integer_invalid_value_overflow() {
-        assert_frame_error(
-            b":9223372036854775808\r\n",
-            Error::NotInteger("9223372036854775808".into()),
-        );
+        assert_frame_error(b":9223372036854775808\r\n", Error::Overflow);
     }
 
     #[test]
