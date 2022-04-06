@@ -26,63 +26,6 @@ pub struct Server<KV, S> {
     shutdown: S,
 }
 
-/// The server's runtime state that is shared across all connections.
-/// This is also in charge of listening for new inbound connections.
-struct Listener<KV> {
-    // Database handle
-    storage: KV,
-
-    // The TCP socket for listening for inbound connection
-    listener: TcpListener,
-
-    // Semaphore with `MAX_CONNECTIONS`.
-    //
-    // When a handler is dropped, the semaphore is decremented to grant a
-    // permit. When waiting for connections to close, the listener will be
-    // notified once a permit is granted.
-    limit_connections: Arc<Semaphore>,
-
-    // Broacast channeling to signal a shutdown to all active connections.
-    //
-    // The server is responsible for gracefully shutting down active connections.
-    // When a connection is spawned, it is given a broadcast receiver handle.
-    // When the server wants to gracefully shutdown its connections, a `()` value
-    // is sent. Each active connection receives the value, reaches a safe terminal
-    // state, and completes the task.
-    notify_shutdown: broadcast::Sender<()>,
-
-    // This channel ensures that the server will wait for all connections to
-    // complete processing before shutting down.
-    //
-    // Tokio's channnels are closed when all the `Sender` handles are dropped.
-    // When a connection handler is created, it is given clone of the of
-    // `shutdown_complete_tx`, which is dropped when the listener shutdowns.
-    // When all the listeners shut down, the channel is closed and
-    // `shutdown_complete_rx.receive()` will return `None`. At this point, it
-    // is safe for the server to quit.
-    shutdown_complete_rx: mpsc::Receiver<()>,
-    shutdown_complete_tx: mpsc::Sender<()>,
-}
-
-/// Reads client requests and applies those to the storage.
-struct Handler<KV> {
-    // Database handle.
-    storage: KV,
-
-    // Writes and reads frame.
-    connection: Connection,
-
-    // The semaphore that granted the permit for this handler.
-    // The handler is in charge of releasing its permit.
-    limit_connections: Arc<Semaphore>,
-
-    // Receives shut down signal.
-    shutdown: Shutdown,
-
-    // Signals that the handler finishes executing.
-    _shutdown_complete: mpsc::Sender<()>,
-}
-
 impl<KV, S> Server<KV, S> {
     /// Runs the server.
     pub fn new(listener: TcpListener, storage: KV, shutdown: S) -> Self {
@@ -100,10 +43,7 @@ impl<KV, S> Server<KV, S> {
             shutdown_complete_tx,
         };
 
-        Self {
-            listener,
-            shutdown,
-        }
+        Self { listener, shutdown }
     }
 }
 
@@ -146,6 +86,44 @@ where
         // Awaiting for all active connections to finish processing.
         self.listener.shutdown_complete_rx.recv().await;
     }
+}
+
+/// The server's runtime state that is shared across all connections.
+/// This is also in charge of listening for new inbound connections.
+struct Listener<KV> {
+    // Database handle
+    storage: KV,
+
+    // The TCP socket for listening for inbound connection
+    listener: TcpListener,
+
+    // Semaphore with `MAX_CONNECTIONS`.
+    //
+    // When a handler is dropped, the semaphore is decremented to grant a
+    // permit. When waiting for connections to close, the listener will be
+    // notified once a permit is granted.
+    limit_connections: Arc<Semaphore>,
+
+    // Broacast channeling to signal a shutdown to all active connections.
+    //
+    // The server is responsible for gracefully shutting down active connections.
+    // When a connection is spawned, it is given a broadcast receiver handle.
+    // When the server wants to gracefully shutdown its connections, a `()` value
+    // is sent. Each active connection receives the value, reaches a safe terminal
+    // state, and completes the task.
+    notify_shutdown: broadcast::Sender<()>,
+
+    // This channel ensures that the server will wait for all connections to
+    // complete processing before shutting down.
+    //
+    // Tokio's channnels are closed when all the `Sender` handles are dropped.
+    // When a connection handler is created, it is given clone of the of
+    // `shutdown_complete_tx`, which is dropped when the listener shutdowns.
+    // When all the listeners shut down, the channel is closed and
+    // `shutdown_complete_rx.receive()` will return `None`. At this point, it
+    // is safe for the server to quit.
+    shutdown_complete_rx: mpsc::Receiver<()>,
+    shutdown_complete_tx: mpsc::Sender<()>,
 }
 
 impl<KV> Listener<KV> {
@@ -216,6 +194,25 @@ where
             });
         }
     }
+}
+
+/// Reads client requests and applies those to the storage.
+struct Handler<KV> {
+    // Database handle.
+    storage: KV,
+
+    // Writes and reads frame.
+    connection: Connection,
+
+    // The semaphore that granted the permit for this handler.
+    // The handler is in charge of releasing its permit.
+    limit_connections: Arc<Semaphore>,
+
+    // Receives shut down signal.
+    shutdown: Shutdown,
+
+    // Signals that the handler finishes executing.
+    _shutdown_complete: mpsc::Sender<()>,
 }
 
 impl<KV> Handler<KV>

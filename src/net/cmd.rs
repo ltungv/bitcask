@@ -17,24 +17,6 @@ use thiserror::Error;
 use super::{connection::Connection, frame::Frame, shutdown::Shutdown};
 use crate::storage::KeyValueStorage;
 
-/// Enumeration of all the supported Redis commands. Each commands
-/// will have an associated struct that contains its arguments' data
-#[derive(Debug)]
-pub enum Command {
-    /// DEL key [key ...]
-    Del(Del),
-    /// GET key
-    Get(Get),
-    /// SET key value
-    Set(Set),
-}
-
-/// A parser that extracts values contained within a command frame
-#[derive(Debug)]
-pub struct Parser {
-    frames: std::vec::IntoIter<Frame>,
-}
-
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Key is not given")]
@@ -54,6 +36,18 @@ pub enum Error {
 
     #[error("Could not parse bytes as an UTF-8 string - {0}")]
     NotUtf8(#[from] std::str::Utf8Error),
+}
+
+/// Enumeration of all the supported Redis commands. Each commands
+/// will have an associated struct that contains its arguments' data
+#[derive(Debug)]
+pub enum Command {
+    /// DEL key [key ...]
+    Del(Del),
+    /// GET key
+    Get(Get),
+    /// SET key value
+    Set(Set),
 }
 
 impl Command {
@@ -92,6 +86,12 @@ impl TryFrom<Frame> for Command {
             None => Err(Error::BadCommand("".into())),
         }
     }
+}
+
+/// A parser that extracts values contained within a command frame
+#[derive(Debug)]
+pub struct Parser {
+    frames: std::vec::IntoIter<Frame>,
 }
 
 impl Parser {

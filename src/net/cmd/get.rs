@@ -2,8 +2,8 @@ use bytes::Bytes;
 use tracing::debug;
 
 use crate::{
-    storage::KeyValueStorage,
     net::{self, connection::Connection, frame::Frame},
+    storage::KeyValueStorage,
 };
 
 /// Arguments for for GET command

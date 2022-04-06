@@ -6,6 +6,24 @@ use std::io::Cursor;
 use bytes::{Buf, Bytes};
 use thiserror::Error;
 
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum Error {
+    #[error("Incomplete frame")]
+    Incomplete,
+
+    #[error("Invalid frame encoding")]
+    BadEncoding,
+
+    #[error("Found an invalid array/bulk-string length (got {0})")]
+    BadLength(i64),
+
+    #[error("Could not parse bytes as an integer (got {0:?})")]
+    NotInteger(String),
+
+    #[error("Could not parse bytes as an UTF-8 string - {0}")]
+    NotUtf8(#[from] std::string::FromUtf8Error),
+}
+
 /// A frame in [Redis Serialization Protocol (RESP)].
 ///
 /// This is the smallest data unit that is accepted by the client and ther server when
@@ -28,24 +46,6 @@ pub enum Frame {
     Array(Vec<Frame>),
     /// Nothingness
     Null,
-}
-
-#[derive(Error, Debug, PartialEq, Eq)]
-pub enum Error {
-    #[error("Incomplete frame")]
-    Incomplete,
-
-    #[error("Invalid frame encoding")]
-    BadEncoding,
-
-    #[error("Found an invalid array/bulk-string length (got {0})")]
-    BadLength(i64),
-
-    #[error("Could not parse bytes as an integer (got {0:?})")]
-    NotInteger(String),
-
-    #[error("Could not parse bytes as an UTF-8 string - {0}")]
-    NotUtf8(#[from] std::string::FromUtf8Error),
 }
 
 impl Frame {

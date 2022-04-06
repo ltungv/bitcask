@@ -6,8 +6,8 @@ use tokio::net::TcpListener;
 use tokio::signal;
 
 use opal::{
-    storage::{BitcaskConfig, BitcaskKeyValueStorage, DashMapKeyValueStorage, SledKeyValueStorage},
     net::Server,
+    storage::{BitcaskConfig, BitcaskKeyValueStorage, DashMapKeyValueStorage, SledKeyValueStorage},
     telemetry::{get_subscriber, init_subscriber},
 };
 
