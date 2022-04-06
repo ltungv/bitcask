@@ -17,13 +17,9 @@ pub enum Error {
     #[error("Invalid frame encoding")]
     BadEncoding,
 
-    /// The parsed length is invalid
-    #[error("Found an invalid array/bulk-string length (got {0})")]
-    BadLength(i64),
-
     /// Could not read bytes as integer
-    #[error("Could not parse bytes as an integer (got {0:?})")]
-    NotInteger(String),
+    #[error("Could not parse bytes as an integer")]
+    NotInteger,
 
     /// Could not read bytes as utf8 string
     #[error("Could not parse bytes as an UTF-8 string - {0}")]
@@ -90,7 +86,7 @@ impl Frame {
                 }
                 // Parse the bulk string length and try convert it to u64
                 let len = get_integer(reader)?;
-                let len = len.try_into().map_err(|_| Error::BadLength(len))?;
+                let len = len.try_into().map_err(|_| Error::BadEncoding)?;
                 if (len + 2) > reader.remaining() {
                     // Missing \r\n
                     return Err(Error::Incomplete);
@@ -103,7 +99,7 @@ impl Frame {
             b'*' => {
                 // Parse the array length and try convert it to u64
                 let len = get_integer(reader)?;
-                let len = len.try_into().map_err(|_| Error::BadLength(len))?;
+                let len = len.try_into().map_err(|_| Error::BadEncoding)?;
                 // Recursively parse each element of the array
                 let mut items = Vec::with_capacity(len);
                 for _ in 0..len {
@@ -133,7 +129,7 @@ impl Frame {
                     skip(buf, 4)?; // skip '-1\r\n'
                 } else {
                     let n = get_integer(buf)?;
-                    let n: usize = n.try_into().map_err(|_| Error::BadLength(n))?;
+                    let n: usize = n.try_into().map_err(|_| Error::BadEncoding)?;
                     // skip string length + 2 for "\r\n"
                     skip(buf, n + 2)?;
                 }
@@ -169,8 +165,84 @@ fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
 }
 
 fn get_integer(buf: &mut Cursor<&[u8]>) -> Result<i64, Error> {
-    let l = get_line(buf)?;
-    atoi::atoi(l).ok_or_else(|| Error::NotInteger(String::from_utf8_lossy(l).to_string()))
+    // check of sign byte
+    let is_positive = match peek_byte(buf)? {
+        b'-' => {
+            buf.advance(1);
+            false
+        }
+        b'+' => {
+            buf.advance(1);
+            true
+        }
+        // we don't care if the first byte is a digit or not
+        _ => true,
+    };
+
+    // i64 has at most 19 digits, so we parse the first 18 digits using unchecked arithmetic
+    // and parse the last few digits using checked arithmetic
+    let max_safe_digits = 18;
+    let start = buf.position() as usize;
+    let end = buf.get_ref().len() - 1;
+
+    let mut idx = start;
+    let mut num: i64 = 0;
+
+    // using if clause improves performance over multiplying with the sign value
+    let num = if is_positive {
+        // parse unchecked
+        while idx != end && idx != max_safe_digits {
+            match ascii_to_i64(buf.get_ref()[idx]) {
+                Some(n) => num = num * 10 + n,
+                None => break,
+            }
+            idx += 1;
+        }
+        // parse checked
+        let mut num = Some(num);
+        while idx != end {
+            match ascii_to_i64(buf.get_ref()[idx]) {
+                Some(n) => {
+                    num = num
+                        .and_then(|num| num.checked_mul(10))
+                        .and_then(|num| num.checked_add(n))
+                }
+                None => break,
+            }
+            idx += 1;
+        }
+        num
+    } else {
+        // parse unchecked
+        while idx != end && idx != max_safe_digits {
+            match ascii_to_i64(buf.get_ref()[idx]) {
+                Some(n) => num = num * 10 - n,
+                None => break,
+            }
+            idx += 1;
+        }
+        // parse checked
+        let mut num = Some(num);
+        while idx != end {
+            match ascii_to_i64(buf.get_ref()[idx]) {
+                Some(n) => {
+                    num = num
+                        .and_then(|num| num.checked_mul(10))
+                        .and_then(|num| num.checked_sub(n))
+                }
+                None => break,
+            }
+            idx += 1;
+        }
+        num
+    };
+
+    if idx == start || buf.get_ref()[idx] != b'\r' {
+        // fails when there's no digit or when the integer is not ended with "\r\n"
+        return Err(Error::NotInteger);
+    }
+    buf.advance(idx - start + 2); // skip "\r\n"
+    num.ok_or(Error::NotInteger)
 }
 
 fn get_byte(buf: &mut Cursor<&[u8]>) -> Result<u8, Error> {
@@ -193,6 +265,13 @@ fn skip(src: &mut Cursor<&[u8]>, n: usize) -> Result<(), Error> {
     }
     src.advance(n);
     Ok(())
+}
+
+fn ascii_to_i64(b: u8) -> Option<i64> {
+    if !(48..=57).contains(&b) {
+        return None;
+    }
+    Some(b as i64 - 48)
 }
 
 #[cfg(test)]
@@ -251,28 +330,22 @@ mod tests {
 
     #[test]
     fn parse_integer_fails_when_line_is_empty() {
-        assert_frame_error(b":\r\n", Error::NotInteger("".into()));
+        assert_frame_error(b":\r\n", Error::NotInteger);
     }
 
     #[test]
     fn parse_integer_fails_when_there_is_non_digit() {
-        assert_frame_error(b":nan\r\n", Error::NotInteger("nan".into()));
+        assert_frame_error(b":nan\r\n", Error::NotInteger);
     }
 
     #[test]
     fn parse_integer_fails_when_value_underflow() {
-        assert_frame_error(
-            b":-9223372036854775809\r\n",
-            Error::NotInteger("-9223372036854775809".into()),
-        );
+        assert_frame_error(b":-9223372036854775809\r\n", Error::NotInteger);
     }
 
     #[test]
     fn parse_integer_fails_when_value_overflow() {
-        assert_frame_error(
-            b":9223372036854775808\r\n",
-            Error::NotInteger("9223372036854775808".into()),
-        );
+        assert_frame_error(b":9223372036854775808\r\n", Error::NotInteger);
     }
 
     #[test]
@@ -370,7 +443,7 @@ mod tests {
 
     #[test]
     fn parse_array_length_fails_with_invalid_length_prefix() {
-        assert_frame_error(b"*-2\r\n", Error::BadLength(-2));
+        assert_frame_error(b"*-2\r\n", Error::BadEncoding);
     }
 
     #[test]
@@ -380,7 +453,7 @@ mod tests {
 
     #[test]
     fn parse_null_fails_when_use_array_variant() {
-        assert_frame_error(b"*-1\r\n", Error::BadLength(-1));
+        assert_frame_error(b"*-1\r\n", Error::BadEncoding);
     }
 
     fn assert_frame(input_data: &[u8], expected_frame: Frame) {
