@@ -314,17 +314,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_integer_invalid_value_underflow() {
+    fn parse_integer_fails_when_value_underflow() {
         assert_frame_error(b":-9223372036854775809\r\n", Error::Underflow);
     }
 
     #[test]
-    fn parse_integer_invalid_value_overflow() {
+    fn parse_integer_fails_when_value_overflow() {
         assert_frame_error(b":9223372036854775808\r\n", Error::Overflow);
     }
 
     #[test]
-    fn parse_bulk_string_valid() {
+    fn parse_bulk_string_ok() {
         assert_frame(b"$5\r\nhello\r\n", Frame::BulkString("hello".into()));
         assert_frame(b"$0\r\n\r\n", Frame::BulkString(Bytes::new()));
 
@@ -350,17 +350,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_bulk_string_invalid_length_prefix() {
+    fn parse_bulk_string_fails_with_invalid_length_prefix() {
         assert_frame_error(b"$-2\r\n", Error::BadEncoding);
     }
 
     #[test]
-    fn parse_bulk_string_invalid_length_prefix_too_large() {
+    fn parse_bulk_string_incomplete_with_large_length_prefix() {
         assert_frame_error(b"$24\r\nhello\r\nworld\r\n", Error::Incomplete);
     }
 
     #[test]
-    fn parse_array_valid() {
+    fn parse_array_ok() {
         assert_frame(b"*0\r\n", Frame::Array(vec![]));
 
         assert_frame(
@@ -417,17 +417,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_array_length_invalid_length_prefix() {
+    fn parse_array_length_fails_with_invalid_length_prefix() {
         assert_frame_error(b"*-2\r\n", Error::BadLength(-2));
     }
 
     #[test]
-    fn parse_null_valid() {
+    fn parse_null_ok() {
         assert_frame(b"$-1\r\n", Frame::Null);
     }
 
     #[test]
-    fn parse_null_invalid() {
+    fn parse_null_fails_when_use_array_variant() {
         assert_frame_error(b"*-1\r\n", Error::BadLength(-1));
     }
 
