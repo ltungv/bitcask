@@ -24,6 +24,6 @@ pub enum Error {
     Io(#[from] io::Error),
 
     /// Error from running asynchronous tasks.
-    #[error("Asynchronous task join error - {0}")]
-    AsyncTaskJoin(#[from] tokio::task::JoinError),
+    #[error("Asynchronous task error - {0}")]
+    AsyncTask(#[from] tokio::task::JoinError),
 }
