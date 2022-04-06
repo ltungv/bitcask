@@ -6,8 +6,6 @@ use std::io::Cursor;
 use bytes::{Buf, Bytes};
 use thiserror::Error;
 
-use super::cmd::{Del, Get, Set};
-
 /// A frame in [Redis Serialization Protocol (RESP)].
 ///
 /// This is the smallest data unit that is accepted by the client and ther server when
@@ -33,7 +31,7 @@ pub enum Frame {
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
-pub enum FrameError {
+pub enum Error {
     #[error("Incomplete frame")]
     Incomplete,
 
@@ -58,7 +56,7 @@ impl Frame {
     /// enough data for the frame; caller should retry later after receiving this error.
     ///
     /// [`FrameError::Incomplete`]: crate::resp::frame::Error::Incomplete
-    pub fn parse(reader: &mut Cursor<&[u8]>) -> Result<Self, FrameError> {
+    pub fn parse(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
         match get_byte(reader)? {
             b'+' => {
                 let l = get_line(reader)?;
@@ -80,16 +78,16 @@ impl Frame {
                     // Otherwise, a negative length is invalid
                     let l = get_line(reader)?;
                     if l != b"-1" {
-                        return Err(FrameError::BadEncoding);
+                        return Err(Error::BadEncoding);
                     }
                     return Ok(Frame::Null);
                 }
                 // Parse the bulk string length and try convert it to u64
                 let len = get_integer(reader)?;
-                let len = len.try_into().map_err(|_| FrameError::BadLength(len))?;
+                let len = len.try_into().map_err(|_| Error::BadLength(len))?;
                 if (len + 2) > reader.remaining() {
                     // Missing \r\n
-                    return Err(FrameError::Incomplete);
+                    return Err(Error::Incomplete);
                 }
                 // Get the bulk string
                 let b = reader.copy_to_bytes(len);
@@ -99,7 +97,7 @@ impl Frame {
             b'*' => {
                 // Parse the array length and try convert it to u64
                 let len = get_integer(reader)?;
-                let len = len.try_into().map_err(|_| FrameError::BadLength(len))?;
+                let len = len.try_into().map_err(|_| Error::BadLength(len))?;
                 // Recursively parse each element of the array
                 let mut items = Vec::with_capacity(len);
                 for _ in 0..len {
@@ -107,12 +105,12 @@ impl Frame {
                 }
                 Ok(Frame::Array(items))
             }
-            _ => Err(FrameError::BadEncoding),
+            _ => Err(Error::BadEncoding),
         }
     }
 
     /// Checks if a message frame can be parsed from the reader without memory allocations.
-    pub fn check(buf: &mut Cursor<&[u8]>) -> Result<(), FrameError> {
+    pub fn check(buf: &mut Cursor<&[u8]>) -> Result<(), Error> {
         match get_byte(buf)? {
             b'+' => {
                 get_line(buf)?;
@@ -129,7 +127,7 @@ impl Frame {
                     skip(buf, 4)?; // skip '-1\r\n'
                 } else {
                     let n = get_integer(buf)?;
-                    let n: usize = n.try_into().map_err(|_| FrameError::BadLength(n))?;
+                    let n: usize = n.try_into().map_err(|_| Error::BadLength(n))?;
                     // skip string length + 2 for "\r\n"
                     skip(buf, n + 2)?;
                 }
@@ -140,44 +138,13 @@ impl Frame {
                     Frame::check(buf)?;
                 }
             }
-            _ => return Err(FrameError::BadEncoding),
+            _ => return Err(Error::BadEncoding),
         }
         Ok(())
     }
 }
 
-// TODO: Converting from commands to frame should not allocate
-
-impl From<Del> for Frame {
-    fn from(cmd: Del) -> Self {
-        let mut cmd_data = vec![Self::BulkString("DEL".into())];
-        for key in cmd.keys() {
-            cmd_data.push(Self::BulkString(Bytes::copy_from_slice(key)));
-        }
-        Self::Array(cmd_data)
-    }
-}
-
-impl From<Get> for Frame {
-    fn from(cmd: Get) -> Self {
-        Self::Array(vec![
-            Self::BulkString("GET".into()),
-            Self::BulkString(Bytes::copy_from_slice(cmd.key())),
-        ])
-    }
-}
-
-impl From<Set> for Frame {
-    fn from(cmd: Set) -> Self {
-        Self::Array(vec![
-            Self::BulkString("SET".into()),
-            Self::BulkString(Bytes::copy_from_slice(cmd.key())),
-            Self::BulkString(Bytes::copy_from_slice(cmd.value())),
-        ])
-    }
-}
-
-fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], FrameError> {
+fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
     let start = buf.position() as usize;
     let end = buf.get_ref().len() - 1;
     for i in start..end {
@@ -186,31 +153,31 @@ fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], FrameError> {
             return Ok(&buf.get_ref()[start..i]);
         }
     }
-    Err(FrameError::Incomplete)
+    Err(Error::Incomplete)
 }
 
-fn get_integer(buf: &mut Cursor<&[u8]>) -> Result<i64, FrameError> {
+fn get_integer(buf: &mut Cursor<&[u8]>) -> Result<i64, Error> {
     let l = get_line(buf)?;
-    atoi::atoi(l).ok_or_else(|| FrameError::NotInteger(String::from_utf8_lossy(l).into()))
+    atoi::atoi(l).ok_or_else(|| Error::NotInteger(String::from_utf8_lossy(l).into()))
 }
 
-fn get_byte(buf: &mut Cursor<&[u8]>) -> Result<u8, FrameError> {
+fn get_byte(buf: &mut Cursor<&[u8]>) -> Result<u8, Error> {
     if !buf.has_remaining() {
-        return Err(FrameError::Incomplete);
+        return Err(Error::Incomplete);
     }
     Ok(buf.get_u8())
 }
 
-fn peek_byte(src: &Cursor<&[u8]>) -> Result<u8, FrameError> {
+fn peek_byte(src: &Cursor<&[u8]>) -> Result<u8, Error> {
     if !src.has_remaining() {
-        return Err(FrameError::Incomplete);
+        return Err(Error::Incomplete);
     }
     Ok(src.chunk()[0])
 }
 
-fn skip(src: &mut Cursor<&[u8]>, n: usize) -> Result<(), FrameError> {
+fn skip(src: &mut Cursor<&[u8]>, n: usize) -> Result<(), Error> {
     if src.remaining() < n {
-        return Err(FrameError::Incomplete);
+        return Err(Error::Incomplete);
     }
     src.advance(n);
     Ok(())
@@ -264,19 +231,19 @@ mod tests {
 
     #[test]
     fn parse_integer_invalid_empty_buffer() {
-        assert_frame_error(b":\r\n", FrameError::NotInteger("".into()));
+        assert_frame_error(b":\r\n", Error::NotInteger("".into()));
     }
 
     #[test]
     fn parse_integer_invalid_non_digit_character() {
-        assert_frame_error(b":nan\r\n", FrameError::NotInteger("nan".into()));
+        assert_frame_error(b":nan\r\n", Error::NotInteger("nan".into()));
     }
 
     #[test]
     fn parse_integer_invalid_value_underflow() {
         assert_frame_error(
             b":-9223372036854775809\r\n",
-            FrameError::NotInteger("-9223372036854775809".into()),
+            Error::NotInteger("-9223372036854775809".into()),
         );
     }
 
@@ -284,7 +251,7 @@ mod tests {
     fn parse_integer_invalid_value_overflow() {
         assert_frame_error(
             b":9223372036854775808\r\n",
-            FrameError::NotInteger("9223372036854775808".into()),
+            Error::NotInteger("9223372036854775808".into()),
         );
     }
 
@@ -316,12 +283,12 @@ mod tests {
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix() {
-        assert_frame_error(b"$-2\r\n", FrameError::BadEncoding);
+        assert_frame_error(b"$-2\r\n", Error::BadEncoding);
     }
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix_too_large() {
-        assert_frame_error(b"$24\r\nhello\r\nworld\r\n", FrameError::Incomplete);
+        assert_frame_error(b"$24\r\nhello\r\nworld\r\n", Error::Incomplete);
     }
 
     #[test]
@@ -383,7 +350,7 @@ mod tests {
 
     #[test]
     fn parse_array_length_invalid_length_prefix() {
-        assert_frame_error(b"*-2\r\n", FrameError::BadLength(-2));
+        assert_frame_error(b"*-2\r\n", Error::BadLength(-2));
     }
 
     #[test]
@@ -393,7 +360,7 @@ mod tests {
 
     #[test]
     fn parse_null_invalid() {
-        assert_frame_error(b"*-1\r\n", FrameError::BadLength(-1));
+        assert_frame_error(b"*-1\r\n", Error::BadLength(-1));
     }
 
     fn assert_frame(input_data: &[u8], expected_frame: Frame) {
@@ -401,12 +368,12 @@ mod tests {
         assert_eq!(frame, expected_frame);
     }
 
-    fn assert_frame_error(input_data: &[u8], expected_err: FrameError) {
+    fn assert_frame_error(input_data: &[u8], expected_err: Error) {
         let err = parse_frame(input_data).unwrap_err();
         assert_eq!(expected_err, err)
     }
 
-    fn parse_frame(input_data: &[u8]) -> Result<Frame, FrameError> {
+    fn parse_frame(input_data: &[u8]) -> Result<Frame, Error> {
         let mut buf = Cursor::new(input_data);
 
         Frame::check(&mut buf)?;

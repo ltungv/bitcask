@@ -1,22 +1,12 @@
 use std::io::{self, Cursor, Write};
 
 use bytes::{Buf, BytesMut};
-use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     net::TcpStream,
 };
 
-use super::frame::{Frame, FrameError};
-
-#[derive(Error, Debug)]
-pub enum ConnectionError {
-    #[error("Frame error - {0}")]
-    Frame(#[from] FrameError),
-
-    #[error("I/O error - {0}")]
-    Io(#[from] io::Error),
-}
+use super::frame::{self, Frame};
 
 /// Sends and receives [`Frame`] values from the remote peer.
 ///
@@ -46,7 +36,7 @@ where
     /// Returns the received frame if succeeded. When the underlying stream is
     /// closed and there's no data left to be read, returns `None`. Otherwise,
     /// an error is returned.
-    pub async fn read_frame(&mut self) -> Result<Option<Frame>, ConnectionError> {
+    pub async fn read_frame(&mut self) -> Result<Option<Frame>, super::Error> {
         loop {
             if let Some(frame) = self.parse_frame()? {
                 return Ok(Some(frame));
@@ -69,7 +59,7 @@ where
     }
 
     /// Write a frame to the underlying stream
-    pub async fn write_frame(&mut self, frame: &Frame) -> Result<(), ConnectionError> {
+    pub async fn write_frame(&mut self, frame: &Frame) -> Result<(), super::Error> {
         if let Frame::Array(items) = frame {
             self.write_array(items).await?;
         } else {
@@ -80,7 +70,7 @@ where
         Ok(())
     }
 
-    fn parse_frame(&mut self) -> Result<Option<Frame>, ConnectionError> {
+    fn parse_frame(&mut self) -> Result<Option<Frame>, frame::Error> {
         let mut buf = Cursor::new(&self.buffer[..]);
         match Frame::check(&mut buf) {
             Ok(()) => {
@@ -97,13 +87,13 @@ where
                 Ok(Some(frame))
             }
             // Not enough data has been buffered
-            Err(FrameError::Incomplete) => Ok(None),
+            Err(frame::Error::Incomplete) => Ok(None),
             // An error was encountered
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
-    async fn write_array(&mut self, items: &[Frame]) -> Result<(), ConnectionError> {
+    async fn write_array(&mut self, items: &[Frame]) -> io::Result<()> {
         // frame init
         self.stream.write_u8(b'*').await?;
 
@@ -118,7 +108,7 @@ where
         Ok(())
     }
 
-    async fn write_single_value(&mut self, frame: &Frame) -> Result<(), ConnectionError> {
+    async fn write_single_value(&mut self, frame: &Frame) -> io::Result<()> {
         match frame {
             Frame::SimpleString(s) => {
                 // frame init
@@ -165,7 +155,7 @@ where
         Ok(())
     }
 
-    async fn write_decimal(&mut self, value: i64) -> Result<(), ConnectionError> {
+    async fn write_decimal(&mut self, value: i64) -> io::Result<()> {
         // i64 has about 20 digits
         let mut buf = [0u8; 20];
         let mut buf = Cursor::new(&mut buf[..]);

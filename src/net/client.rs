@@ -1,39 +1,12 @@
-use std::io;
-
 use bytes::Bytes;
-use thiserror::Error;
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::debug;
 
 use super::{
-    cmd::{Del, Get, Set},
-    connection::{Connection, ConnectionError},
+    cmd::{self, Del, Get, Set},
+    connection::Connection,
     frame::Frame,
 };
-
-/// Error from the client.
-#[derive(Error, Debug)]
-pub enum ClientError {
-    /// Network connection dropped by the server.
-    #[error("Connection reset by peer")]
-    ConnectionReset,
-
-    /// The server could not complete a request.
-    #[error("Error from server `{0}`")]
-    ServerFailed(String),
-
-    /// The server returns unexpected frame.
-    #[error("Unexpected frame (got {0:?})")]
-    BadResponse(Frame),
-
-    /// Error from I/O operations.
-    #[error("I/O error - {0}")]
-    Io(#[from] io::Error),
-
-    /// Error from the network connection.
-    #[error("Connection error - {0}")]
-    Connection(#[from] ConnectionError),
-}
 
 /// Provide methods and hold states for managing a connection to a Redis server.
 ///
@@ -50,7 +23,7 @@ impl Client {
     /// with the address.
     ///
     /// [`Client`]: crate::resp::client::Client
-    pub async fn connect<A>(addr: A) -> Result<Self, ClientError>
+    pub async fn connect<A>(addr: A) -> Result<Self, super::Error>
     where
         A: ToSocketAddrs,
     {
@@ -59,20 +32,45 @@ impl Client {
         Ok(Self { conn })
     }
 
+    /// Removes the specified keys, ignoring non-existed keys.
+    ///
+    /// Returns the number of keys that were removed.
+    #[tracing::instrument(skip(self))]
+    pub async fn del(&mut self, keys: Vec<String>) -> Result<i64, super::Error> {
+        // already checked for non-empty slice with the if-condition
+        let cmd = Del::new(
+            keys.iter()
+                .map(|k| Bytes::copy_from_slice(k.as_bytes()))
+                .collect(),
+        );
+        let frame: Frame = cmd.into();
+        debug!(request = ?frame);
+
+        self.conn.write_frame(&frame).await?;
+
+        // Wait for the response from the server
+        match self.read_response().await? {
+            Frame::Integer(n) => Ok(n),
+            f => Err(cmd::Error::BadFrame(f).into()),
+        }
+    }
+
     /// Get the value of the key.
     ///
     /// Returns `None` if the key does not exist.
     #[tracing::instrument(skip(self))]
-    pub async fn get(&mut self, key: &str) -> Result<Option<Bytes>, ClientError> {
-        let frame: Frame = Get::new(key).into();
-        self.conn.write_frame(&frame).await?;
+    pub async fn get(&mut self, key: &str) -> Result<Option<Bytes>, super::Error> {
+        let cmd = Get::new(Bytes::copy_from_slice(key.as_bytes()));
+        let frame: Frame = cmd.into();
         debug!(request = ?frame);
+
+        self.conn.write_frame(&frame).await?;
 
         // Wait for the response from the server
         match self.read_response().await? {
             Frame::BulkString(s) => Ok(Some(s)), // retrieved key's value
             Frame::Null => Ok(None),             // key does not exist
-            f => Err(ClientError::BadResponse(f)),
+            f => Err(cmd::Error::BadFrame(f).into()),
         }
     }
 
@@ -89,52 +87,37 @@ impl Client {
     /// - (unsupported) KEEPTTL -- Retain the time to live associated with the key.
     /// - (unsupported) GET -- Return the old string stored at key, or nil if key did not exist. An error is returned and SET aborted if the value stored at key is not a string.
     #[tracing::instrument(skip(self))]
-    pub async fn set(&mut self, key: &str, value: Bytes) -> Result<(), ClientError> {
-        self.set_cmd(Set::new(key, value)).await
-    }
-
-    async fn set_cmd(&mut self, cmd: Set) -> Result<(), ClientError> {
+    pub async fn set(&mut self, key: &str, value: &[u8]) -> Result<(), super::Error> {
+        let cmd = Set::new(
+            Bytes::copy_from_slice(key.as_bytes()),
+            Bytes::copy_from_slice(value),
+        );
         let frame: Frame = cmd.into();
-        self.conn.write_frame(&frame).await?;
-
         debug!(request = ?frame);
+
+        self.conn.write_frame(&frame).await?;
 
         // Wait for the response from the server
         match self.read_response().await? {
             Frame::SimpleString(s) if s == "OK" => Ok(()), // suceeded
-            f => Err(ClientError::BadResponse(f)),         // error occured / unsupported reply
+            f => Err(cmd::Error::BadFrame(f).into()),      // error occured / unsupported reply
         }
     }
 
-    /// Removes the specified keys, ignoring non-existed keys.
-    ///
-    /// Returns the number of keys that were removed.
-    #[tracing::instrument(skip(self))]
-    pub async fn del(&mut self, keys: &[String]) -> Result<i64, ClientError> {
-        // already checked for non-empty slice with the if-condition
-        let cmd = Del::new(keys);
-
-        let frame: Frame = cmd.into();
-        self.conn.write_frame(&frame).await?;
-        debug!(request = ?frame);
-
-        // Wait for the response from the server
-        match self.read_response().await? {
-            Frame::Integer(n) => Ok(n),
-            f => Err(ClientError::BadResponse(f)),
-        }
-    }
-
-    async fn read_response(&mut self) -> Result<Frame, ClientError> {
+    async fn read_response(&mut self) -> Result<Frame, super::Error> {
         let frame = self.conn.read_frame().await?;
         debug!(response = ?frame);
 
         match frame {
-            Some(Frame::Error(err)) => Err(ClientError::ServerFailed(err)),
+            Some(Frame::Error(err)) => Err(super::Error::Storage(anyhow::anyhow!(err))),
             Some(frame) => Ok(frame),
             None => {
-                // Server closes socket without sending data
-                Err(ClientError::ConnectionReset)
+                // The peer closed the socket while sending a frame.
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "connection reset by peer",
+                )
+                .into())
             }
         }
     }

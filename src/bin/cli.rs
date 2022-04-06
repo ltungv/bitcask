@@ -18,7 +18,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut client = Client::connect(format!("{}:{}", cli.host, cli.port)).await?;
     match cli.cmd {
         Commands::Set { key, value } => {
-            client.set(&key, value.into()).await?;
+            client.set(&key, value.as_bytes()).await?;
             println!("\"OK\"");
         }
         Commands::Get { key } => match client.get(&key).await? {
@@ -29,7 +29,7 @@ async fn main() -> Result<(), anyhow::Error> {
             None => println!("(nil)"),
         },
         Commands::Del { keys } => {
-            let n_deleted = client.del(&keys).await?;
+            let n_deleted = client.del(keys).await?;
             println!("(integer) {}", n_deleted);
         }
     }

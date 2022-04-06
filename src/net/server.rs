@@ -1,8 +1,7 @@
 //! Asynchronous server for the storage engine that communicates with RESP protocol.
 
-use std::{convert::TryFrom, future::Future, io, sync::Arc, time::Duration};
+use std::{convert::TryFrom, future::Future, sync::Arc, time::Duration};
 
-use thiserror::Error;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{broadcast, mpsc, Semaphore},
@@ -10,11 +9,7 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
-use super::{
-    cmd::{parser::CommandParseError, Command, CommandApplyError},
-    connection::{Connection, ConnectionError},
-    shutdown::Shutdown,
-};
+use super::{cmd::Command, connection::Connection, shutdown::Shutdown};
 use crate::engine::KeyValueStore;
 
 /// Max number of concurrent connections that can be served by the server.
@@ -24,98 +19,16 @@ const MAX_CONNECTIONS: usize = 128;
 /// The value is in second.
 const MAX_BACKOFF: u64 = 64;
 
-/// Error from the server.
-#[derive(Error, Debug)]
-pub enum ServerError {
-    /// Error from I/O operations.
-    #[error("I/O error - {0}")]
-    Io(#[from] io::Error),
-
-    /// Error from the network connection.
-    #[error("Connection error - {0}")]
-    Connection(#[from] ConnectionError),
-
-    /// Error from executing the client command.
-    #[error("Command apply error - {0}")]
-    CommandApply(#[from] CommandApplyError),
-
-    /// Error from parsing the client command.
-    #[error("Command parse error - {0}")]
-    CommandParse(#[from] CommandParseError),
-}
-
 /// Provide methods and hold states for a Redis server. The server will exist when `shutdown`
 /// finishes, or when there's an error.
 pub struct Server<KV, S> {
-    ctx: Context<KV>,
+    listener: Listener<KV>,
     shutdown: S,
-}
-
-impl<KV, S> Server<KV, S> {
-    /// Runs the server.
-    pub fn new(listener: TcpListener, storage: KV, shutdown: S) -> Self {
-        // Ignoring the broadcast received because one can be created by
-        // calling `subscribe()` on the `Sender`
-        let (notify_shutdown, _) = broadcast::channel(1);
-        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
-
-        let ctx = Context {
-            storage,
-            listener,
-            limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
-            notify_shutdown,
-            shutdown_complete_rx,
-            shutdown_complete_tx,
-        };
-
-        Self { ctx, shutdown }
-    }
-}
-
-impl<KV, S> Server<KV, S>
-where
-    KV: KeyValueStore,
-    S: Future,
-{
-    /// Runs the server that exits when `shutdown` finishes, or when there's
-    /// an error.
-    pub async fn run(mut self) {
-        // Concurrently run the tasks and blocks the current task until
-        // one of the running tasks finishes. The block that is associated
-        // with the task gets to run, when the task is the first to finish.
-        // Under normal circumstances, this blocks until `shutdown` finishes.
-        tokio::select! {
-            result = self.ctx.listen() => {
-                if let Err(err) = result {
-                    // The server has been failing to accept inbound connections
-                    // for multiple times, so it's giving up and shutting down.
-                    // Error occured while handling individual connection don't
-                    // propagate further.
-                    error!(cause = %err, "failed to accept");
-                }
-            }
-            _ = self.shutdown => {
-                info!("shutting down");
-            }
-        }
-
-        // Dropping this so tasks that have called `subscribe()` will be notified for
-        // shutdown and can gracefully exit.
-        drop(self.ctx.notify_shutdown);
-
-        // Dropping this so there's no dangling `Sender`. Otherwise, awaiting on the
-        // channel's received will block forever because we still holding the last
-        // sender instance.
-        drop(self.ctx.shutdown_complete_tx);
-
-        // Awaiting for all active connections to finish processing.
-        self.ctx.shutdown_complete_rx.recv().await;
-    }
 }
 
 /// The server's runtime state that is shared across all connections.
 /// This is also in charge of listening for new inbound connections.
-struct Context<KV> {
+struct Listener<KV> {
     // Database handle
     storage: KV,
 
@@ -151,7 +64,91 @@ struct Context<KV> {
     shutdown_complete_tx: mpsc::Sender<()>,
 }
 
-impl<KV> Context<KV> {
+/// Reads client requests and applies those to the storage.
+struct Handler<KV> {
+    // Database handle.
+    storage: KV,
+
+    // Writes and reads frame.
+    connection: Connection,
+
+    // The semaphore that granted the permit for this handler.
+    // The handler is in charge of releasing its permit.
+    limit_connections: Arc<Semaphore>,
+
+    // Receives shut down signal.
+    shutdown: Shutdown,
+
+    // Signals that the handler finishes executing.
+    _shutdown_complete: mpsc::Sender<()>,
+}
+
+impl<KV, S> Server<KV, S> {
+    /// Runs the server.
+    pub fn new(listener: TcpListener, storage: KV, shutdown: S) -> Self {
+        // Ignoring the broadcast received because one can be created by
+        // calling `subscribe()` on the `Sender`
+        let (notify_shutdown, _) = broadcast::channel(1);
+        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
+
+        let ctx = Listener {
+            storage,
+            listener,
+            limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            notify_shutdown,
+            shutdown_complete_rx,
+            shutdown_complete_tx,
+        };
+
+        Self {
+            listener: ctx,
+            shutdown,
+        }
+    }
+}
+
+impl<KV, S> Server<KV, S>
+where
+    KV: KeyValueStore,
+    S: Future,
+{
+    /// Runs the server that exits when `shutdown` finishes, or when there's
+    /// an error.
+    pub async fn run(mut self) {
+        // Concurrently run the tasks and blocks the current task until
+        // one of the running tasks finishes. The block that is associated
+        // with the task gets to run, when the task is the first to finish.
+        // Under normal circumstances, this blocks until `shutdown` finishes.
+        tokio::select! {
+            result = self.listener.listen() => {
+                if let Err(err) = result {
+                    // The server has been failing to accept inbound connections
+                    // for multiple times, so it's giving up and shutting down.
+                    // Error occured while handling individual connection don't
+                    // propagate further.
+                    error!(cause = %err, "failed to accept");
+                }
+            }
+            _ = self.shutdown => {
+                info!("shutting down");
+            }
+        }
+
+        // Dropping this so tasks that have called `subscribe()` will be notified for
+        // shutdown and can gracefully exit.
+        drop(self.listener.notify_shutdown);
+
+        // Dropping this so there's no dangling `Sender`. Otherwise, awaiting on the
+        // channel's received will block forever because we still holding the last
+        // sender instance.
+        drop(self.listener.shutdown_complete_tx);
+
+        // Awaiting for all active connections to finish processing.
+        self.listener.shutdown_complete_rx.recv().await;
+    }
+}
+
+impl<KV> Listener<KV> {
     /// Accepts a new connection.
     ///
     /// Returns the a [`TcpStream`] on success. Retries with an exponential
@@ -159,7 +156,7 @@ impl<KV> Context<KV> {
     /// to maximum allowed time, returns an error.
     ///
     /// [`TcpStream`]: tokio::net::TcpStream
-    async fn accept(&mut self) -> Result<TcpStream, ServerError> {
+    async fn accept(&mut self) -> Result<TcpStream, super::Error> {
         let mut backoff = 1;
         loop {
             match self.listener.accept().await {
@@ -180,11 +177,11 @@ impl<KV> Context<KV> {
     }
 }
 
-impl<KV> Context<KV>
+impl<KV> Listener<KV>
 where
     KV: KeyValueStore,
 {
-    async fn listen(&mut self) -> Result<(), ServerError> {
+    async fn listen(&mut self) -> Result<(), super::Error> {
         info!("listening for new connections");
 
         loop {
@@ -221,25 +218,6 @@ where
     }
 }
 
-/// Reads client requests and applies those to the storage.
-struct Handler<KV> {
-    // Database handle.
-    storage: KV,
-
-    // Writes and reads frame.
-    connection: Connection,
-
-    // The semaphore that granted the permit for this handler.
-    // The handler is in charge of releasing its permit.
-    limit_connections: Arc<Semaphore>,
-
-    // Receives shut down signal.
-    shutdown: Shutdown,
-
-    // Signals that the handler finishes executing.
-    _shutdown_complete: mpsc::Sender<()>,
-}
-
 impl<KV> Handler<KV>
 where
     KV: KeyValueStore,
@@ -252,7 +230,7 @@ where
     /// When the shutdown signal is received, the connection is processed until
     /// it reaches a safe state, at which point it is terminated.
     #[tracing::instrument(skip(self))]
-    async fn run(mut self) -> Result<(), ServerError> {
+    async fn run(mut self) -> Result<(), super::Error> {
         // Keeps ingesting frames when the server is still running
         while !self.shutdown.is_shutdown() {
             // Awaiting for a shutdown event or a new frame

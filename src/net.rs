@@ -4,9 +4,11 @@
 mod client;
 mod cmd;
 mod connection;
+mod error;
 mod frame;
 mod server;
 mod shutdown;
 
-pub use client::{Client, ClientError};
-pub use server::{Server, ServerError};
+pub use client::Client;
+pub use error::Error;
+pub use server::Server;
