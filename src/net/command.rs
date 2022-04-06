@@ -33,7 +33,7 @@ pub enum Error {
 
     /// Could not parse utf8 string
     #[error("Could not parse bytes as an UTF-8 string - {0}")]
-    NotUtf8(#[from] std::str::Utf8Error),
+    NotUtf8(#[from] std::string::FromUtf8Error),
 }
 
 /// Enumeration of all the supported Redis commands. Each commands
@@ -107,10 +107,10 @@ impl Parser {
     ///
     /// Returns a string if the next value can be represented as string.
     /// Otherwise returns an error. Returns `None` if there's no value left.
-    fn get_string(&mut self) -> Result<Option<Bytes>, Error> {
+    fn get_string(&mut self) -> Result<Option<String>, Error> {
         match self.frames.next() {
             Some(Frame::BulkString(s)) => {
-                std::str::from_utf8(&s)?;
+                let s = String::from_utf8(s.to_vec())?;
                 Ok(Some(s))
             }
             Some(f) => Err(Error::BadFrame(f)),

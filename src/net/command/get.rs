@@ -9,12 +9,12 @@ use crate::{
 /// Arguments for for GET command
 #[derive(Debug)]
 pub struct Get {
-    key: Bytes,
+    key: String,
 }
 
 impl Get {
     /// Creates a new set of arguments
-    pub fn new(key: Bytes) -> Self {
+    pub fn new(key: String) -> Self {
         Self { key }
     }
 
@@ -27,7 +27,7 @@ impl Get {
         KV: KeyValueStorage,
     {
         // Get the key's value
-        let result = tokio::task::spawn_blocking(move || storage.get(self.key))
+        let result = tokio::task::spawn_blocking(move || storage.get(Bytes::from(self.key)))
             .await?
             .map_err(|e| net::Error::Storage(e.into()))?;
 
@@ -48,7 +48,7 @@ impl From<Get> for Frame {
     fn from(cmd: Get) -> Self {
         Self::Array(vec![
             Self::BulkString("GET".into()),
-            Self::BulkString(cmd.key),
+            Self::BulkString(Bytes::from(cmd.key)),
         ])
     }
 }

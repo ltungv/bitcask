@@ -9,14 +9,14 @@ use crate::{
 /// Arguments for DEL command
 #[derive(Debug)]
 pub struct Del {
-    keys: Vec<Bytes>,
+    keys: Vec<String>,
 }
 
 impl Del {
     /// Creates a new set of arguments.
     ///
     /// DEL requires that the list of keys must have at least 1 element
-    pub fn new(keys: Vec<Bytes>) -> Self {
+    pub fn new(keys: Vec<String>) -> Self {
         Self { keys }
     }
 
@@ -32,7 +32,7 @@ impl Del {
         let count = tokio::task::spawn_blocking(move || {
             let mut count = 0;
             for key in self.keys {
-                match storage.del(key) {
+                match storage.del(Bytes::from(key)) {
                     Ok(true) => count += 1,
                     Ok(false) => continue,
                     Err(e) => return Err(e),
@@ -57,7 +57,7 @@ impl From<Del> for Frame {
     fn from(cmd: Del) -> Self {
         let mut cmd_data = vec![Self::BulkString("DEL".into())];
         for key in cmd.keys {
-            cmd_data.push(Self::BulkString(key));
+            cmd_data.push(Self::BulkString(Bytes::from(key)));
         }
         Self::Array(cmd_data)
     }
