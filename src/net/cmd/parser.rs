@@ -62,7 +62,7 @@ impl CommandParser {
     fn parse_del(&mut self) -> Result<Del, CommandParseError> {
         let mut keys = Vec::new();
         while let Some(key) = self.get_string()? {
-            keys.push(Bytes::copy_from_slice(&key));
+            keys.push(key)
         }
         if keys.is_empty() {
             return Err(CommandParseError::NoKey);
@@ -72,7 +72,6 @@ impl CommandParser {
 
     fn parse_get(&mut self) -> Result<Get, CommandParseError> {
         let key = self.get_string()?.ok_or(CommandParseError::NoKey)?;
-        let key = Bytes::copy_from_slice(&key);
         if !self.finish() {
             return Err(CommandParseError::FoundUnconsumedData);
         }
@@ -81,7 +80,6 @@ impl CommandParser {
 
     fn parse_set(&mut self) -> Result<Set, CommandParseError> {
         let key = self.get_string()?.ok_or(CommandParseError::NoKey)?;
-        let key = Bytes::copy_from_slice(&key);
         let value = self.get_bytes()?.ok_or(CommandParseError::NoValue)?;
         if !self.finish() {
             return Err(CommandParseError::FoundUnconsumedData);
@@ -111,23 +109,6 @@ impl CommandParser {
     fn get_bytes(&mut self) -> Result<Option<Bytes>, CommandParseError> {
         match self.frames.next() {
             Some(Frame::BulkString(s)) => Ok(Some(s)),
-            Some(f) => Err(CommandParseError::BadFrame(f)),
-            None => Ok(None),
-        }
-    }
-
-    /// Parses the next value in the frame as an 64-bit integer
-    ///
-    /// Returns an `i64` if the next value can be represented as an as an
-    /// 64-bit integer.  Otherwise returns an error. Returns `None` if
-    /// there's no value left.
-    fn get_integer(&mut self) -> Result<Option<i64>, CommandParseError> {
-        match self.frames.next() {
-            Some(Frame::BulkString(s)) => {
-                Ok(Some(atoi::atoi(&s[..]).ok_or_else(|| {
-                    CommandParseError::NotInteger(s.to_vec())
-                })?))
-            }
             Some(f) => Err(CommandParseError::BadFrame(f)),
             None => Ok(None),
         }
