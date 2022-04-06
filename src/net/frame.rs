@@ -6,20 +6,26 @@ use std::io::Cursor;
 use bytes::{Buf, Bytes};
 use thiserror::Error;
 
+/// Error from parsing a frame
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum Error {
+    /// There's not enough bytes to form a frame
     #[error("Incomplete frame")]
     Incomplete,
 
+    /// Unexpected bytes encountered during parse
     #[error("Invalid frame encoding")]
     BadEncoding,
 
+    /// The parsed length is invalid
     #[error("Found an invalid array/bulk-string length (got {0})")]
     BadLength(i64),
 
+    /// Could not read bytes as integer
     #[error("Could not parse bytes as an integer (got {0:?})")]
     NotInteger(String),
 
+    /// Could not read bytes as utf8 string
     #[error("Could not parse bytes as an UTF-8 string - {0}")]
     NotUtf8(#[from] std::string::FromUtf8Error),
 }

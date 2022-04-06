@@ -16,23 +16,30 @@ use thiserror::Error;
 use super::{connection::Connection, frame::Frame, shutdown::Shutdown};
 use crate::storage::KeyValueStorage;
 
+/// Error from parsing command from frame
 #[derive(Error, Debug)]
 pub enum Error {
+    /// Key is not provided
     #[error("Key is not given")]
     NoKey,
 
+    /// Value is not provided
     #[error("Value is not given")]
     NoValue,
 
+    /// Unexpected errors during parse
     #[error("Invalid command encoding")]
     BadEncoding,
 
+    /// Encountered an unexpected/unsupported command
     #[error("Found an invalid command (got {0:?})")]
     BadCommand(String),
 
+    /// Encountered an unexpected frame
     #[error("Found an invalid frame (got {0:?})")]
     BadFrame(Frame),
 
+    /// Could not parse utf8 string
     #[error("Could not parse bytes as an UTF-8 string - {0}")]
     NotUtf8(#[from] std::str::Utf8Error),
 }
@@ -94,6 +101,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    /// Create a new parse for the given frame
     pub fn new(frame: Frame) -> Result<Self, Error> {
         match frame {
             Frame::Array(frames) => Ok(Self {
