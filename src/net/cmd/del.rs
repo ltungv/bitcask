@@ -3,7 +3,7 @@ use bytes::Bytes;
 use tracing::debug;
 
 use crate::{
-    engine::KeyValueStore,
+    storage::KeyValueStorage,
     net::{self, connection::Connection, frame::Frame},
 };
 
@@ -27,7 +27,7 @@ impl Del {
     #[tracing::instrument(skip(self, storage, connection))]
     pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), net::Error>
     where
-        KV: KeyValueStore,
+        KV: KeyValueStorage,
     {
         // Delete the keys and count the number of deletions
         let count = tokio::task::spawn_blocking(move || {

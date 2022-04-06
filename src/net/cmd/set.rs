@@ -2,8 +2,8 @@ use bytes::Bytes;
 use tracing::debug;
 
 use crate::{
-    engine::KeyValueStore,
     net::{self, connection::Connection, frame::Frame},
+    storage::KeyValueStorage,
 };
 
 /// Arguments for SET command
@@ -27,7 +27,7 @@ impl Set {
     #[tracing::instrument(skip(self, storage, connection))]
     pub async fn apply<KV>(self, storage: KV, connection: &mut Connection) -> Result<(), net::Error>
     where
-        KV: KeyValueStore,
+        KV: KeyValueStorage,
     {
         // Set the key's value
         tokio::task::spawn_blocking(move || storage.set(self.key, self.value))

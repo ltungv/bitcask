@@ -15,7 +15,7 @@ use bytes::Bytes;
 use thiserror::Error;
 
 use super::{connection::Connection, frame::Frame, shutdown::Shutdown};
-use crate::engine::KeyValueStore;
+use crate::storage::KeyValueStorage;
 
 /// Enumeration of all the supported Redis commands. Each commands
 /// will have an associated struct that contains its arguments' data
@@ -69,7 +69,7 @@ impl Command {
         _shutdown: &mut Shutdown,
     ) -> Result<(), super::Error>
     where
-        KV: KeyValueStore,
+        KV: KeyValueStorage,
     {
         match self {
             Command::Del(cmd) => cmd.apply(storage, connection).await,

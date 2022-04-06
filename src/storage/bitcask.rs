@@ -21,30 +21,30 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error};
 
-use super::KeyValueStore;
+use super::KeyValueStorage;
 use log::{LogDir, LogIterator, LogWriter};
 
 /// A wrapper around [`Bitcask`] that implements the `KeyValueStore` trait.
 #[derive(Clone, Debug)]
-pub struct BitcaskKeyValueStore(Bitcask);
+pub struct BitcaskKeyValueStorage(Bitcask);
 
-impl KeyValueStore for BitcaskKeyValueStore {
+impl KeyValueStorage for BitcaskKeyValueStorage {
     type Error = BitcaskError;
 
-    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
-        self.0.put(key, value)
+    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.0.delete(key)
     }
 
     fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
         self.0.get(key)
     }
 
-    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
-        self.0.delete(key)
+    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.0.put(key, value)
     }
 }
 
-impl From<Bitcask> for BitcaskKeyValueStore {
+impl From<Bitcask> for BitcaskKeyValueStorage {
     fn from(bitcask: Bitcask) -> Self {
         Self(bitcask)
     }
@@ -109,6 +109,7 @@ impl BitcaskConfig {
         self
     }
 }
+
 impl Default for BitcaskConfig {
     fn default() -> Self {
         let max_file_size = 2 * GIB; // 2 GiBs

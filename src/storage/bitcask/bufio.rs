@@ -43,6 +43,7 @@ where
         })
     }
 }
+
 impl<R> Seek for BufReaderWithPos<R>
 where
     R: Read + Seek,

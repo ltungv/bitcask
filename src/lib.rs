@@ -8,6 +8,6 @@
 #![deny(rust_2021_compatibility)]
 #![warn(missing_docs)]
 
-pub mod engine;
 pub mod net;
+pub mod storage;
 pub mod telemetry;

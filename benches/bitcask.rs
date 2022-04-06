@@ -7,7 +7,7 @@ use common::{
     sequential_write_bulk_bench_iter_no_tempdir,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use opal::engine::KeyValueStore;
+use opal::storage::KeyValueStorage;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 

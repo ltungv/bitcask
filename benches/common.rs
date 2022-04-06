@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use criterion::black_box;
-use opal::engine::{
-    BitcaskConfig, BitcaskKeyValueStore, DashMapKeyValueStore, KeyValueStore, SledKeyValueStore,
+use opal::storage::{
+    BitcaskConfig, BitcaskKeyValueStorage, DashMapKeyValueStorage, KeyValueStorage, SledKeyValueStorage,
 };
 use rand::{
     distributions::{Standard, Uniform},
@@ -25,14 +25,14 @@ pub enum EngineType {
 pub fn concurrent_write_bulk_bench_iter<E>(
     (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
 ) where
-    E: KeyValueStore,
+    E: KeyValueStorage,
 {
     concurrent_write_bulk_bench_iter_no_tempdir((engine, kv_pairs));
 }
 
 pub fn concurrent_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
 where
-    E: KeyValueStore,
+    E: KeyValueStorage,
 {
     kv_pairs
         .into_par_iter()
@@ -43,7 +43,7 @@ where
 
 pub fn concurrent_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
 where
-    E: KeyValueStore,
+    E: KeyValueStorage,
 {
     kv_pairs
         .into_par_iter()
@@ -55,14 +55,14 @@ where
 pub fn sequential_write_bulk_bench_iter<E>(
     (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
 ) where
-    E: KeyValueStore,
+    E: KeyValueStorage,
 {
     sequential_write_bulk_bench_iter_no_tempdir((engine, kv_pairs))
 }
 
 pub fn sequential_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
 where
-    E: KeyValueStore,
+    E: KeyValueStorage,
 {
     kv_pairs.into_iter().for_each(|(k, v)| {
         engine.set(black_box(k), black_box(v)).unwrap();
@@ -71,30 +71,30 @@ where
 
 pub fn sequential_read_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
 where
-    E: KeyValueStore,
+    E: KeyValueStorage,
 {
     kv_pairs.into_iter().for_each(|(k, _)| {
         engine.get(black_box(&k)).unwrap();
     });
 }
 
-pub fn get_bitcask() -> (BitcaskKeyValueStore, TempDir) {
+pub fn get_bitcask() -> (BitcaskKeyValueStorage, TempDir) {
     let tmpdir = TempDir::new().unwrap();
     let bitcask = BitcaskConfig::default().open(tmpdir.path()).unwrap();
-    let engine = BitcaskKeyValueStore::from(bitcask);
+    let engine = BitcaskKeyValueStorage::from(bitcask);
     (engine, tmpdir)
 }
 
-pub fn get_sled() -> (SledKeyValueStore, TempDir) {
+pub fn get_sled() -> (SledKeyValueStorage, TempDir) {
     let tmpdir = TempDir::new().unwrap();
     let db = sled::Config::default().path(tmpdir.path()).open().unwrap();
-    let engine = SledKeyValueStore::new(db);
+    let engine = SledKeyValueStorage::new(db);
     (engine, tmpdir)
 }
 
-pub fn get_dashmap() -> (DashMapKeyValueStore, TempDir) {
+pub fn get_dashmap() -> (DashMapKeyValueStorage, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let engine = DashMapKeyValueStore::default();
+    let engine = DashMapKeyValueStorage::default();
     (engine, tmpdir)
 }
 

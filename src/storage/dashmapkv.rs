@@ -4,11 +4,11 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use thiserror::Error;
 
-use super::KeyValueStore;
+use super::KeyValueStorage;
 
 /// A type alias for a our database type
 #[derive(Default)]
-pub struct DashMapKeyValueStore {
+pub struct DashMapKeyValueStorage {
     inner: Arc<DashMap<Bytes, Bytes>>,
 }
 
@@ -16,7 +16,7 @@ pub struct DashMapKeyValueStore {
 #[error("In-memory key-value store error")]
 pub struct DashMapKeyValueStoreErrror;
 
-impl KeyValueStore for DashMapKeyValueStore {
+impl KeyValueStorage for DashMapKeyValueStorage {
     type Error = DashMapKeyValueStoreErrror;
 
     /// Delete a key from the store. Returns the value of the removed
@@ -37,7 +37,7 @@ impl KeyValueStore for DashMapKeyValueStore {
     }
 }
 
-impl Clone for DashMapKeyValueStore {
+impl Clone for DashMapKeyValueStorage {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),

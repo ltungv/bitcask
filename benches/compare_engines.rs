@@ -6,7 +6,7 @@ use common::{
     sequential_write_bulk_bench_iter, EngineType, KeyValuePair,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion, Throughput};
-use opal::engine::KeyValueStore;
+use opal::storage::KeyValueStorage;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 
@@ -253,7 +253,7 @@ fn concurrent_read_bulk_bench(
 
 fn sequential_read_bulk_bench<E>(b: &mut Bencher, (kv_pairs, engine): &(&Vec<KeyValuePair>, E))
 where
-    E: KeyValueStore,
+    E: KeyValueStorage,
 {
     kv_pairs.iter().cloned().for_each(|(k, v)| {
         engine.set(k, v).unwrap();

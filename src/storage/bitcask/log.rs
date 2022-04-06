@@ -13,23 +13,11 @@ use super::{
     utils,
 };
 
-/// Create a new data file for writing entries to.
-pub fn create<P>(path: P) -> io::Result<fs::File>
-where
-    P: AsRef<Path>,
-{
-    fs::OpenOptions::new()
-        .append(true)
-        .create_new(true)
-        .open(path)
-}
-
-/// Open a data file for reading entries from.
-pub fn open<P>(path: P) -> io::Result<fs::File>
-where
-    P: AsRef<Path>,
-{
-    fs::OpenOptions::new().read(true).open(path)
+/// Position and length of an log entry within a log file.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LogIndex {
+    pub len: u64,
+    pub pos: u64,
 }
 
 /// A mapping of log file IDs to log file readers.
@@ -64,13 +52,6 @@ impl LogDir {
             self.0.remove(&id);
         }
     }
-}
-
-/// Position and length of an log entry within a log file.
-#[derive(Debug, PartialEq, Eq)]
-pub struct LogIndex {
-    pub len: u64,
-    pub pos: u64,
 }
 
 /// An append-only file writer that serializes data using `bincode`.
@@ -194,6 +175,25 @@ impl LogIterator {
             },
         }
     }
+}
+
+/// Create a new data file for writing entries to.
+pub fn create<P>(path: P) -> io::Result<fs::File>
+where
+    P: AsRef<Path>,
+{
+    fs::OpenOptions::new()
+        .append(true)
+        .create_new(true)
+        .open(path)
+}
+
+/// Open a data file for reading entries from.
+pub fn open<P>(path: P) -> io::Result<fs::File>
+where
+    P: AsRef<Path>,
+{
+    fs::OpenOptions::new().read(true).open(path)
 }
 
 #[cfg(test)]

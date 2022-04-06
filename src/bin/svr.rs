@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tokio::signal;
 
 use opal::{
-    engine::{BitcaskConfig, BitcaskKeyValueStore, DashMapKeyValueStore, SledKeyValueStore},
+    storage::{BitcaskConfig, BitcaskKeyValueStorage, DashMapKeyValueStorage, SledKeyValueStorage},
     net::Server,
     telemetry::{get_subscriber, init_subscriber},
 };
@@ -38,7 +38,7 @@ pub async fn main() -> Result<(), anyhow::Error> {
             let db_dir = args.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
-            let storage = BitcaskKeyValueStore::from(conf.open(db_dir)?);
+            let storage = BitcaskKeyValueStorage::from(conf.open(db_dir)?);
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }
@@ -47,12 +47,12 @@ pub async fn main() -> Result<(), anyhow::Error> {
             fs::create_dir_all(&db_dir)?;
 
             let db = sled::Config::default().path(db_dir).open()?;
-            let storage = SledKeyValueStore::new(db);
+            let storage = SledKeyValueStorage::new(db);
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }
         Commands::Inmem => {
-            let storage = DashMapKeyValueStore::default();
+            let storage = DashMapKeyValueStorage::default();
             let server = Server::new(listener, storage, signal::ctrl_c());
             server.run().await;
         }

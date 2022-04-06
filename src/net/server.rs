@@ -10,7 +10,7 @@ use tokio::{
 use tracing::{debug, error, info};
 
 use super::{cmd::Command, connection::Connection, shutdown::Shutdown};
-use crate::engine::KeyValueStore;
+use crate::storage::KeyValueStorage;
 
 /// Max number of concurrent connections that can be served by the server.
 const MAX_CONNECTIONS: usize = 128;
@@ -91,7 +91,7 @@ impl<KV, S> Server<KV, S> {
         let (notify_shutdown, _) = broadcast::channel(1);
         let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
-        let ctx = Listener {
+        let listener = Listener {
             storage,
             listener,
             limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
@@ -101,7 +101,7 @@ impl<KV, S> Server<KV, S> {
         };
 
         Self {
-            listener: ctx,
+            listener,
             shutdown,
         }
     }
@@ -109,7 +109,7 @@ impl<KV, S> Server<KV, S> {
 
 impl<KV, S> Server<KV, S>
 where
-    KV: KeyValueStore,
+    KV: KeyValueStorage,
     S: Future,
 {
     /// Runs the server that exits when `shutdown` finishes, or when there's
@@ -179,7 +179,7 @@ impl<KV> Listener<KV> {
 
 impl<KV> Listener<KV>
 where
-    KV: KeyValueStore,
+    KV: KeyValueStorage,
 {
     async fn listen(&mut self) -> Result<(), super::Error> {
         info!("listening for new connections");
@@ -220,7 +220,7 @@ where
 
 impl<KV> Handler<KV>
 where
-    KV: KeyValueStore,
+    KV: KeyValueStorage,
 {
     /// Process a single connection.
     ///

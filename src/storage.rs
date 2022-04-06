@@ -6,13 +6,13 @@ mod sledkv;
 
 use bytes::Bytes;
 
-pub use bitcask::{BitcaskConfig, BitcaskKeyValueStore};
-pub use dashmapkv::DashMapKeyValueStore;
-pub use sledkv::SledKeyValueStore;
+pub use bitcask::{BitcaskConfig, BitcaskKeyValueStorage};
+pub use dashmapkv::DashMapKeyValueStorage;
+pub use sledkv::SledKeyValueStorage;
 
 /// A basic interface for a thread-safe key-value store that ensure consistent access to shared
 /// data from multiple different threads.
-pub trait KeyValueStore: Clone + Send + 'static {
+pub trait KeyValueStorage: Clone + Send + 'static {
     /// Error type of the underlying engine
     type Error: std::error::Error + Send + Sync;
 
