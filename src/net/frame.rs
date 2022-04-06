@@ -154,7 +154,7 @@ fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
     for i in start..end {
         match buf.get_ref()[i] {
             b'\r' => {
-                buf.set_position((i + 2) as u64);
+                buf.advance(i - start + 2);
                 return Ok(&buf.get_ref()[start..i]);
             }
             b'\n' => return Err(Error::BadEncoding),
