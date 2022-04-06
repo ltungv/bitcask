@@ -28,12 +28,16 @@ tracing-log = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry", "env-filter"] }
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = { version = "0.3", features = ["async_tokio"] }
 pprof = { version = "0.7", features = ["criterion", "flamegraph"] }
 proptest = "1"
 rand = "0.8"
 rayon = "1"
 tempfile = "3"
+
+[[bench]]
+name = "bitcask"
+harness = false
 
 [[bench]]
 name = "compare_engines"

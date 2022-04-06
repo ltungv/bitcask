@@ -139,7 +139,7 @@ pub fn bench_read(c: &mut Criterion) {
 
 criterion_group!(
     name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)));
+    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
     targets = bench_write, bench_read, bench_overwrite
 );
 criterion_main!(benches);

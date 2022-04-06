@@ -1,3 +1,5 @@
+//! A wrapper that turns a streams of bytes into a stream of frames.
+
 use std::io::{self, Cursor, Write};
 
 use bytes::{Buf, BytesMut};
