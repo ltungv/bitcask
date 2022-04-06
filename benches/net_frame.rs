@@ -3,13 +3,13 @@ mod common;
 use std::io::Cursor;
 
 use bytes::{Buf, Bytes};
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use opal::net::{connection::Connection, frame::Frame};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::{distributions::Alphanumeric, prelude::*};
 use tokio::runtime::Runtime;
 
-const ITER: usize = 1000;
+const ITER: usize = 10000;
 
 const ARRAY_LEN: usize = 5;
 const ARRAY_NEST: usize = 1;

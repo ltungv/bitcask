@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Arguments for DEL command
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Del {
     keys: Vec<String>,
 }

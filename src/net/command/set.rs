@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Arguments for SET command
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Set {
     /// The key to set a value to
     key: String,

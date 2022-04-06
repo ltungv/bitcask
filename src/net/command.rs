@@ -17,11 +17,11 @@ use super::{connection::Connection, frame::Frame, shutdown::Shutdown};
 use crate::storage::KeyValueStorage;
 
 /// Error from parsing command from frame
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum Error {
     /// Command arguments are invalid
-    #[error("Invalid command arguments")]
-    BadArguments,
+    #[error("Invalid command arguments - {0}")]
+    BadArguments(&'static str),
 
     /// Encountered an invalid command
     #[error("Invalid command (got {0:?})")]
@@ -38,7 +38,7 @@ pub enum Error {
 
 /// Enumeration of all the supported Redis commands. Each commands
 /// will have an associated struct that contains its arguments' data
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     /// DEL key [key ...]
     Del(Del),
@@ -145,7 +145,7 @@ impl TryFrom<Parser> for Del {
             keys.push(key)
         }
         if keys.is_empty() {
-            return Err(Error::BadArguments);
+            return Err(Error::BadArguments("Keys are empty"));
         }
         Ok(Self::new(keys))
     }
@@ -155,9 +155,11 @@ impl TryFrom<Parser> for Get {
     type Error = Error;
 
     fn try_from(mut parser: Parser) -> Result<Self, Self::Error> {
-        let key = parser.get_string()?.ok_or(Error::BadArguments)?;
+        let key = parser
+            .get_string()?
+            .ok_or(Error::BadArguments("Key is not given"))?;
         if !parser.finish() {
-            return Err(Error::BadArguments);
+            return Err(Error::BadArguments("Frame contains extra data"));
         }
         Ok(Self::new(key))
     }
@@ -167,11 +169,153 @@ impl TryFrom<Parser> for Set {
     type Error = Error;
 
     fn try_from(mut parser: Parser) -> Result<Self, Self::Error> {
-        let key = parser.get_string()?.ok_or(Error::BadArguments)?;
-        let value = parser.get_bytes()?.ok_or(Error::BadArguments)?;
+        let key = parser
+            .get_string()?
+            .ok_or(Error::BadArguments("Key is not given"))?;
+        let value = parser
+            .get_bytes()?
+            .ok_or(Error::BadArguments("Value is not given"))?;
         if !parser.finish() {
-            return Err(Error::BadArguments);
+            return Err(Error::BadArguments("Frame contains extra data"));
         }
         Ok(Self::new(key, value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::net::frame::Frame;
+
+    use super::*;
+
+    #[test]
+    fn parse_get_ok() {
+        assert_command(
+            Frame::Array(vec![
+                Frame::BulkString("GET".into()),
+                Frame::BulkString("hello".into()),
+            ]),
+            Command::Get(Get::new("hello".into())),
+        )
+    }
+
+    #[test]
+    fn parse_get_no_key() {
+        assert_error(
+            Frame::Array(vec![Frame::BulkString("GET".into())]),
+            Error::BadArguments("Key is not given"),
+        )
+    }
+
+    #[test]
+    fn parse_get_extra_keys() {
+        assert_error(
+            Frame::Array(vec![
+                Frame::BulkString("GET".into()),
+                Frame::BulkString("hello".into()),
+                Frame::BulkString("hello".into()),
+                Frame::BulkString("hello".into()),
+            ]),
+            Error::BadArguments("Frame contains extra data"),
+        )
+    }
+
+    #[test]
+    fn parse_set_ok() {
+        assert_command(
+            Frame::Array(vec![
+                Frame::BulkString("SET".into()),
+                Frame::BulkString("hello".into()),
+                Frame::BulkString("world".into()),
+            ]),
+            Command::Set(Set::new("hello".into(), "world".into())),
+        )
+    }
+
+    #[test]
+    fn parse_set_no_key() {
+        assert_error(
+            Frame::Array(vec![Frame::BulkString("SET".into())]),
+            Error::BadArguments("Key is not given"),
+        )
+    }
+
+    #[test]
+    fn parse_set_no_value() {
+        assert_error(
+            Frame::Array(vec![
+                Frame::BulkString("SET".into()),
+                Frame::BulkString("hello".into()),
+            ]),
+            Error::BadArguments("Value is not given"),
+        )
+    }
+
+    #[test]
+    fn parse_set_extra_data() {
+        assert_error(
+            Frame::Array(vec![
+                Frame::BulkString("SET".into()),
+                Frame::BulkString("hello".into()),
+                Frame::BulkString("hello".into()),
+                Frame::BulkString("hello".into()),
+                Frame::BulkString("hello".into()),
+            ]),
+            Error::BadArguments("Frame contains extra data"),
+        )
+    }
+
+    #[test]
+    fn parse_del_ok() {
+        assert_command(
+            Frame::Array(vec![
+                Frame::BulkString("DEL".into()),
+                Frame::BulkString("hello".into()),
+            ]),
+            Command::Del(Del::new(vec!["hello".into()])),
+        );
+        assert_command(
+            Frame::Array(vec![
+                Frame::BulkString("DEL".into()),
+                Frame::BulkString("hello1".into()),
+                Frame::BulkString("hello2".into()),
+                Frame::BulkString("hello3".into()),
+                Frame::BulkString("hello4".into()),
+                Frame::BulkString("hello5".into()),
+            ]),
+            Command::Del(Del::new(vec![
+                "hello1".into(),
+                "hello2".into(),
+                "hello3".into(),
+                "hello4".into(),
+                "hello5".into(),
+            ])),
+        );
+    }
+
+    #[test]
+    fn parse_del_no_key() {
+        assert_error(
+            Frame::Array(vec![Frame::BulkString("DEL".into())]),
+            Error::BadArguments("Keys are empty"),
+        )
+    }
+
+    #[test]
+    fn parse_invalid_command() {
+        assert_error(
+            Frame::Array(vec![Frame::BulkString("INVALID".into())]),
+            Error::BadCommand("INVALID".into()),
+        );
+    }
+
+    fn assert_command(frame: Frame, cmd: Command) {
+        let parsed = Command::try_from(frame).unwrap();
+        assert_eq!(parsed, cmd);
+    }
+
+    fn assert_error(frame: Frame, err: Error) {
+        let parsed_err = Command::try_from(frame).unwrap_err();
+        assert_eq!(parsed_err, err);
     }
 }

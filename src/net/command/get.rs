@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Arguments for for GET command
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Get {
     key: String,
 }
