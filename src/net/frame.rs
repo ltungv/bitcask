@@ -8,70 +8,110 @@ use thiserror::Error;
 
 use super::cmd::{Del, Get, Set};
 
+/// A frame in [Redis Serialization Protocol (RESP)].
+///
+/// This is the smallest data unit that is accepted by the client and ther server when
+/// they communicate over the network.
+///
+/// [Redis Serialization Protocol (RESP)]: https://redis.io/topics/protocol
+#[derive(Debug, PartialEq)]
+pub enum Frame {
+    /// An UTF-8 string that does not contain carriage-return nor line-feed used for sending
+    /// general information.
+    SimpleString(String),
+    /// An UTF-8 string that does not contain carriage-return nor line-feed used for sending errors
+    /// that occured.
+    Error(String),
+    /// A signed 64-bit number.
+    Integer(i64),
+    /// A bytes sequence.
+    BulkString(Bytes),
+    /// A sequence of frames.
+    Array(Vec<Frame>),
+    /// Nothingness
+    Null,
+}
+
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum FrameError {
     #[error("Incomplete frame")]
     Incomplete,
 
-    #[error("Invalid frame format")]
-    BadFormat,
+    #[error("Invalid frame encoding")]
+    BadEncoding,
 
-    #[error("Invalid length (got {0})")]
+    #[error("Found an invalid array/bulk-string length (got {0})")]
     BadLength(i64),
 
-    #[error("Invalid integer string (got {0:?})")]
-    NotInteger(Vec<u8>),
+    #[error("Could not parse bytes as an integer (got {0:?})")]
+    NotInteger(String),
 
-    #[error("Invalid UTF-8 string - {0}")]
+    #[error("Could not parse bytes as an UTF-8 string - {0}")]
     NotUtf8(#[from] std::string::FromUtf8Error),
-}
-
-/// Data types as specified in [Redis Protocol (RESP)].
-///
-/// This is used as the smallest data unit that is accepted by the client
-/// and the server when they communicate.
-///
-/// [Redis Protocol (RESP)]: https://redis.io/topics/protocol
-#[derive(Debug, PartialEq)]
-pub enum Frame {
-    /// A simple string is an UTF8 encoded string that does not contain carriage-return
-    /// nor line-feed
-    SimpleString(String),
-    /// An error is an UTF8 encoded string that does not contain carriage-return
-    /// nor line-feed
-    Error(String),
-    /// An integer is a signed whole number whose value does not exceed 64 bits
-    Integer(i64),
-    /// A bulk string is a sequence of bytes
-    BulkString(Bytes),
-    /// An array is a sequence of frames
-    Array(Vec<Frame>),
-    /// A null does not carry meaning, represented by a special bulk-string value
-    /// or a special array value
-    Null,
 }
 
 impl Frame {
     /// Try to read data of a frame from the given reader.
     ///
     /// Returns the frame if it can be parsed from the reader, otherwise, returns an error.
-    /// The error variant [`Error::Incomplete`] indicates that the reader does not have
+    /// The error variant [`FrameError::Incomplete`] indicates that the reader does not have
     /// enough data for the frame; caller should retry later after receiving this error.
     ///
-    /// [`Error::Incomplete`]: crate::resp::frame::Error::Incomplete
+    /// [`FrameError::Incomplete`]: crate::resp::frame::Error::Incomplete
     pub fn parse(reader: &mut Cursor<&[u8]>) -> Result<Self, FrameError> {
-        let frame = match get_byte(reader)? {
-            b'+' => parse_simple_string(reader)?,
-            b'-' => parse_error(reader)?,
-            b':' => parse_integer(reader)?,
-            b'$' => parse_bulk_string(reader)?,
-            b'*' => parse_array(reader)?,
-            _ => return Err(FrameError::BadFormat),
-        };
-        Ok(frame)
+        match get_byte(reader)? {
+            b'+' => {
+                let l = get_line(reader)?;
+                let s = String::from_utf8(l.to_vec())?;
+                Ok(Frame::SimpleString(s))
+            }
+            b'-' => {
+                let l = get_line(reader)?;
+                let e = String::from_utf8(l.to_vec())?;
+                Ok(Frame::Error(e))
+            }
+            b':' => {
+                let x = get_integer(reader)?;
+                Ok(Frame::Integer(x))
+            }
+            b'$' => {
+                if peek_byte(reader)? == b'-' {
+                    // If there's a "-1", it's a null frame.
+                    // Otherwise, a negative length is invalid
+                    let l = get_line(reader)?;
+                    if l != b"-1" {
+                        return Err(FrameError::BadEncoding);
+                    }
+                    return Ok(Frame::Null);
+                }
+                // Parse the bulk string length and try convert it to u64
+                let len = get_integer(reader)?;
+                let len = len.try_into().map_err(|_| FrameError::BadLength(len))?;
+                if (len + 2) > reader.remaining() {
+                    // Missing \r\n
+                    return Err(FrameError::Incomplete);
+                }
+                // Get the bulk string
+                let b = reader.copy_to_bytes(len);
+                skip(reader, 2)?; // skip \r\n
+                Ok(Frame::BulkString(b))
+            }
+            b'*' => {
+                // Parse the array length and try convert it to u64
+                let len = get_integer(reader)?;
+                let len = len.try_into().map_err(|_| FrameError::BadLength(len))?;
+                // Recursively parse each element of the array
+                let mut items = Vec::with_capacity(len);
+                for _ in 0..len {
+                    items.push(Frame::parse(reader)?);
+                }
+                Ok(Frame::Array(items))
+            }
+            _ => Err(FrameError::BadEncoding),
+        }
     }
 
-    /// Checks if a message frame can be parsed from the reader
+    /// Checks if a message frame can be parsed from the reader without memory allocations.
     pub fn check(buf: &mut Cursor<&[u8]>) -> Result<(), FrameError> {
         match get_byte(buf)? {
             b'+' => {
@@ -85,8 +125,8 @@ impl Frame {
             }
             b'$' => {
                 if peek_byte(buf)? == b'-' {
-                    // skip '-1\r\n'
-                    skip(buf, 4)?;
+                    // Should be a null frame
+                    skip(buf, 4)?; // skip '-1\r\n'
                 } else {
                     let n = get_integer(buf)?;
                     let n: usize = n.try_into().map_err(|_| FrameError::BadLength(n))?;
@@ -100,11 +140,13 @@ impl Frame {
                     Frame::check(buf)?;
                 }
             }
-            _ => return Err(FrameError::BadFormat),
+            _ => return Err(FrameError::BadEncoding),
         }
         Ok(())
     }
 }
+
+// TODO: Converting from commands to frame should not allocate
 
 impl From<Del> for Frame {
     fn from(cmd: Del) -> Self {
@@ -135,65 +177,6 @@ impl From<Set> for Frame {
     }
 }
 
-fn parse_simple_string(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
-    let line = get_line(reader)?;
-    let simple_str = String::from_utf8(line.to_vec())?;
-    Ok(Frame::SimpleString(simple_str))
-}
-
-fn parse_error(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
-    let line = get_line(reader)?;
-    let error_str = String::from_utf8(line.to_vec())?;
-    Ok(Frame::Error(error_str))
-}
-
-fn parse_integer(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
-    let int_value = get_integer(reader)?;
-    Ok(Frame::Integer(int_value))
-}
-
-fn parse_bulk_string(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
-    if peek_byte(reader)? == b'-' {
-        let line = get_line(reader)?;
-        if line != b"-1" {
-            return Err(FrameError::BadFormat);
-        }
-        return Ok(Frame::Null);
-    }
-
-    let bulk_len = get_integer(reader)?;
-    let bulk_len = bulk_len
-        .try_into()
-        .map_err(|_| FrameError::BadLength(bulk_len))?;
-
-    if (bulk_len + 2) > reader.remaining() {
-        return Err(FrameError::Incomplete);
-    }
-
-    let bulk_bytes = reader.copy_to_bytes(bulk_len);
-    skip(reader, 2)?;
-    Ok(Frame::BulkString(bulk_bytes))
-}
-
-fn parse_array(reader: &mut Cursor<&[u8]>) -> Result<Frame, FrameError> {
-    let array_len = get_integer(reader)?;
-    let array_len = array_len
-        .try_into()
-        .map_err(|_| FrameError::BadLength(array_len))?;
-
-    let mut items = Vec::with_capacity(array_len);
-    for _ in 0..array_len {
-        items.push(Frame::parse(reader)?);
-    }
-
-    Ok(Frame::Array(items))
-}
-
-fn get_integer(buf: &mut Cursor<&[u8]>) -> Result<i64, FrameError> {
-    let integer_str = get_line(buf)?;
-    atoi::atoi(integer_str).ok_or_else(|| FrameError::NotInteger(integer_str.to_vec()))
-}
-
 fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], FrameError> {
     let start = buf.position() as usize;
     let end = buf.get_ref().len() - 1;
@@ -204,6 +187,11 @@ fn get_line<'a>(buf: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], FrameError> {
         }
     }
     Err(FrameError::Incomplete)
+}
+
+fn get_integer(buf: &mut Cursor<&[u8]>) -> Result<i64, FrameError> {
+    let l = get_line(buf)?;
+    atoi::atoi(l).ok_or_else(|| FrameError::NotInteger(String::from_utf8_lossy(l).into()))
 }
 
 fn get_byte(buf: &mut Cursor<&[u8]>) -> Result<u8, FrameError> {
@@ -276,19 +264,19 @@ mod tests {
 
     #[test]
     fn parse_integer_invalid_empty_buffer() {
-        assert_frame_error(b":\r\n", FrameError::NotInteger(vec![]));
+        assert_frame_error(b":\r\n", FrameError::NotInteger("".into()));
     }
 
     #[test]
     fn parse_integer_invalid_non_digit_character() {
-        assert_frame_error(b":nan\r\n", FrameError::NotInteger(b"nan".to_vec()));
+        assert_frame_error(b":nan\r\n", FrameError::NotInteger("nan".into()));
     }
 
     #[test]
     fn parse_integer_invalid_value_underflow() {
         assert_frame_error(
             b":-9223372036854775809\r\n",
-            FrameError::NotInteger(b"-9223372036854775809".to_vec()),
+            FrameError::NotInteger("-9223372036854775809".into()),
         );
     }
 
@@ -296,7 +284,7 @@ mod tests {
     fn parse_integer_invalid_value_overflow() {
         assert_frame_error(
             b":9223372036854775808\r\n",
-            FrameError::NotInteger(b"9223372036854775808".to_vec()),
+            FrameError::NotInteger("9223372036854775808".into()),
         );
     }
 
@@ -328,7 +316,7 @@ mod tests {
 
     #[test]
     fn parse_bulk_string_invalid_length_prefix() {
-        assert_frame_error(b"$-2\r\n", FrameError::BadFormat);
+        assert_frame_error(b"$-2\r\n", FrameError::BadEncoding);
     }
 
     #[test]
