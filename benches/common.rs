@@ -48,7 +48,7 @@ where
     kv_pairs
         .into_par_iter()
         .for_each_with(engine, |engine, (k, _)| {
-            engine.get(black_box(&k)).unwrap();
+            engine.get(black_box(k)).unwrap();
         });
 }
 
@@ -74,7 +74,7 @@ where
     E: KeyValueStorage,
 {
     kv_pairs.into_iter().for_each(|(k, _)| {
-        engine.get(black_box(&k)).unwrap();
+        engine.get(black_box(k)).unwrap();
     });
 }
 
