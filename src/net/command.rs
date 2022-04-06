@@ -19,19 +19,11 @@ use crate::storage::KeyValueStorage;
 /// Error from parsing command from frame
 #[derive(Error, Debug)]
 pub enum Error {
-    /// Key is not provided
-    #[error("Key is not given")]
-    NoKey,
+    /// Command arguments are invalid
+    #[error("Invalid command arguments")]
+    BadArguments,
 
-    /// Value is not provided
-    #[error("Value is not given")]
-    NoValue,
-
-    /// Unexpected errors during parse
-    #[error("Invalid command encoding")]
-    BadEncoding,
-
-    /// Encountered an unexpected/unsupported command
+    /// Encountered an invalid command
     #[error("Found an invalid command (got {0:?})")]
     BadCommand(String),
 
@@ -153,7 +145,7 @@ impl TryFrom<Parser> for Del {
             keys.push(key)
         }
         if keys.is_empty() {
-            return Err(Error::NoKey);
+            return Err(Error::BadArguments);
         }
         Ok(Self::new(keys))
     }
@@ -163,9 +155,9 @@ impl TryFrom<Parser> for Get {
     type Error = Error;
 
     fn try_from(mut parser: Parser) -> Result<Self, Self::Error> {
-        let key = parser.get_string()?.ok_or(Error::NoKey)?;
+        let key = parser.get_string()?.ok_or(Error::BadArguments)?;
         if !parser.finish() {
-            return Err(Error::BadEncoding);
+            return Err(Error::BadArguments);
         }
         Ok(Self::new(key))
     }
@@ -175,10 +167,10 @@ impl TryFrom<Parser> for Set {
     type Error = Error;
 
     fn try_from(mut parser: Parser) -> Result<Self, Self::Error> {
-        let key = parser.get_string()?.ok_or(Error::NoKey)?;
-        let value = parser.get_bytes()?.ok_or(Error::NoValue)?;
+        let key = parser.get_string()?.ok_or(Error::BadArguments)?;
+        let value = parser.get_bytes()?.ok_or(Error::BadArguments)?;
         if !parser.finish() {
-            return Err(Error::BadEncoding);
+            return Err(Error::BadArguments);
         }
         Ok(Self::new(key, value))
     }
