@@ -7,36 +7,6 @@ use opal::{
     telemetry::{get_subscriber, init_subscriber},
 };
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), anyhow::Error> {
-    // Setup global `tracing` subscriber
-    let subscriber = get_subscriber("opal".into(), "info".into(), std::io::stdout);
-    init_subscriber(subscriber);
-
-    let cli = Cli::parse();
-
-    let mut client = Client::connect(format!("{}:{}", cli.host, cli.port)).await?;
-    match cli.cmd {
-        Commands::Set { key, value } => {
-            client.set(&key, value.as_bytes()).await?;
-            println!("\"OK\"");
-        }
-        Commands::Get { key } => match client.get(&key).await? {
-            Some(val) => match String::from_utf8(val.to_vec()) {
-                Ok(s) => println!("\"{}\"", s),
-                Err(_) => println!("{:?}", val),
-            },
-            None => println!("(nil)"),
-        },
-        Commands::Del { keys } => {
-            let n_deleted = client.del(keys).await?;
-            println!("(integer) {}", n_deleted);
-        }
-    }
-
-    Ok(())
-}
-
 /// A minimal Redis client
 #[derive(Parser)]
 #[clap(name = "opal", version, author, long_about = None)]
@@ -74,4 +44,34 @@ enum Commands {
         #[clap(name = "KEY")]
         keys: Vec<String>,
     },
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), anyhow::Error> {
+    // Setup global `tracing` subscriber
+    let subscriber = get_subscriber("opal".into(), "info".into(), std::io::stdout);
+    init_subscriber(subscriber);
+
+    let cli = Cli::parse();
+
+    let mut client = Client::connect(format!("{}:{}", cli.host, cli.port)).await?;
+    match cli.cmd {
+        Commands::Set { key, value } => {
+            client.set(&key, value.as_bytes()).await?;
+            println!("\"OK\"");
+        }
+        Commands::Get { key } => match client.get(&key).await? {
+            Some(val) => match String::from_utf8(val.to_vec()) {
+                Ok(s) => println!("\"{}\"", s),
+                Err(_) => println!("{:?}", val),
+            },
+            None => println!("(nil)"),
+        },
+        Commands::Del { keys } => {
+            let n_deleted = client.del(keys).await?;
+            println!("(integer) {}", n_deleted);
+        }
+    }
+
+    Ok(())
 }

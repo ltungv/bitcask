@@ -1,8 +1,7 @@
 use bytes::Bytes;
 use criterion::black_box;
 use opal::storage::{
-    BitcaskConfig, BitcaskKeyValueStorage, DashMapKeyValueStorage, KeyValueStorage,
-    SledKeyValueStorage,
+    Config, BitcaskKeyValueStorage, DashMapKeyValueStorage, KeyValueStorage, SledKeyValueStorage,
 };
 use rand::{
     distributions::{Standard, Uniform},
@@ -81,7 +80,7 @@ where
 
 pub fn get_bitcask() -> (BitcaskKeyValueStorage, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let bitcask = BitcaskConfig::default().open(tmpdir.path()).unwrap();
+    let bitcask = Config::default().open(tmpdir.path()).unwrap();
     let engine = BitcaskKeyValueStorage::from(bitcask);
     (engine, tmpdir)
 }
