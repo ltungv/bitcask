@@ -44,5 +44,5 @@ name = "compare_engines"
 harness = false
 
 [[bench]]
-name = "bitcask"
+name = "net_frame"
 harness = false
