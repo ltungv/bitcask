@@ -78,11 +78,6 @@ impl LogWriter {
         let len = self.0.pos() - pos;
         Ok(LogIndex { len, pos })
     }
-
-    /// Synchronize the writer state with the file system and ensure all data is physically written.
-    pub fn sync_all(&mut self) -> io::Result<()> {
-        self.0.get_ref().sync_all()
-    }
 }
 
 /// A random-access file reader that deserializes data using `bincode`.

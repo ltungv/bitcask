@@ -25,11 +25,6 @@ where
     pub fn pos(&self) -> u64 {
         self.pos
     }
-
-    /// Return the reference to the underlying reader.
-    pub fn get_ref(&self) -> &R {
-        self.reader.get_ref()
-    }
 }
 
 impl<R> Read for BufReaderWithPos<R>
@@ -80,11 +75,6 @@ where
     /// Return the last written postion.
     pub fn pos(&self) -> u64 {
         self.pos
-    }
-
-    /// Return the reference to the underlying writer.
-    pub fn get_ref(&self) -> &W {
-        self.writer.get_ref()
     }
 }
 

@@ -90,13 +90,6 @@ impl Config {
         self
     }
 
-    /// Set the merge strategy. The writer will merge data files when the conditions defined by the
-    /// given strategy are met.
-    pub fn merge_strategy(mut self, merge_strategy: MergeStrategy) -> Self {
-        self.merge_strategy = merge_strategy;
-        self
-    }
-
     /// Set the merge strategy to max dead bytes.
     pub fn max_dead_bytes(mut self, max_dead_bytes: ByteSize) -> Self {
         self.merge_strategy = MergeStrategy::DeadBytes(max_dead_bytes.as_u64());
@@ -112,11 +105,9 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let max_file_size = 2 * GIB; // 2 GiBs
-        let merge_strategy = MergeStrategy::DeadBytes(512 * MIB); // 512 MiBs
         Self {
-            max_file_size,
-            merge_strategy,
+            max_file_size: 2 * GIB,
+            merge_strategy: MergeStrategy::DeadBytes(512 * MIB),
             concurrency: num_cpus::get(),
         }
     }
@@ -175,7 +166,12 @@ impl Bitcask {
         let (keydir, active_fileid, garbage) = rebuild_index(&path)?;
         debug!(?active_fileid, "Got new activate file ID");
 
-        let readers = Arc::new(ArrayQueue::new(conf.concurrency));
+        let readers = if conf.concurrency > 0 {
+            Arc::new(ArrayQueue::new(conf.concurrency))
+        } else {
+            Arc::new(ArrayQueue::new(conf.concurrency + 1))
+        };
+
         let ctx = Context {
             conf: Arc::new(conf),
             path: Arc::new(path.as_ref().to_path_buf()),
@@ -225,14 +221,6 @@ impl Bitcask {
             // Spin until we have access to a read context
             backoff.spin();
         }
-    }
-
-    fn merge(&self) -> Result<(), Error> {
-        self.writer.lock().merge()
-    }
-
-    fn sync_all(&self) -> Result<(), Error> {
-        self.writer.lock().sync_all()
     }
 }
 
@@ -377,36 +365,38 @@ impl Writer {
 
     /// Apppend a data entry to the active data file.
     fn put_data(&mut self, tstamp: u128, key: &Bytes, value: &Bytes) -> Result<KeyDirEntry, Error> {
-        let entry = DataFileEntry {
+        let datafile_entry = DataFileEntry {
             tstamp,
             key: key.clone(),
             value: Some(value.clone()),
         };
+        let keydir_entry = self.write(tstamp, datafile_entry)?;
+        self.collect_written(keydir_entry.len)?;
+        Ok(keydir_entry)
+    }
 
-        let index = self.writer.append(&entry)?;
+    /// Apppend a tomestone entry to the active data file.
+    fn put_tombstone(&mut self, tstamp: u128, key: &Bytes) -> Result<(), Error> {
+        let datafile_entry = DataFileEntry {
+            tstamp,
+            key: key.clone(),
+            value: None,
+        };
+        let keydir_entry = self.write(tstamp, datafile_entry)?;
+        self.dead_bytes += keydir_entry.len; // tombstones are wasted space
+        self.collect_written(keydir_entry.len)?;
+        Ok(())
+    }
+
+    fn write(&mut self, tstamp: u128, datafile_entry: DataFileEntry) -> Result<KeyDirEntry, Error> {
+        let index = self.writer.append(&datafile_entry)?;
         let keydir_entry = KeyDirEntry {
             fileid: self.active_fileid,
             len: index.len,
             pos: index.pos,
             tstamp,
         };
-
-        self.collect_written(index.len)?;
         Ok(keydir_entry)
-    }
-
-    /// Apppend a tomestone entry to the active data file.
-    fn put_tombstone(&mut self, tstamp: u128, key: &Bytes) -> Result<(), Error> {
-        let entry = DataFileEntry {
-            tstamp,
-            key: key.clone(),
-            value: None,
-        };
-
-        let index = self.writer.append(&entry)?;
-        self.dead_bytes += index.len; // tombstones are wasted space
-        self.collect_written(index.len)?;
-        Ok(())
     }
 
     /// Updates the active file ID and open a new data file with the new active ID.
@@ -438,12 +428,6 @@ impl Writer {
         if self.dead_bytes > n {
             self.merge()?;
         }
-        Ok(())
-    }
-
-    /// Ensure all data and metadata are synchronized with the physical disk.
-    fn sync_all(&mut self) -> Result<(), Error> {
-        self.writer.sync_all()?;
         Ok(())
     }
 }
