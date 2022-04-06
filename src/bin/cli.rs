@@ -57,10 +57,10 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut client = Client::connect(format!("{}:{}", cli.host, cli.port)).await?;
     match cli.cmd {
         Commands::Set { key, value } => {
-            client.set(&key, value.as_bytes()).await?;
+            client.set(key, value.into()).await?;
             println!("\"OK\"");
         }
-        Commands::Get { key } => match client.get(&key).await? {
+        Commands::Get { key } => match client.get(key).await? {
             Some(val) => match String::from_utf8(val.to_vec()) {
                 Ok(s) => println!("\"{}\"", s),
                 Err(_) => println!("{:?}", val),

@@ -110,7 +110,7 @@ impl Parser {
     fn get_string(&mut self) -> Result<Option<Bytes>, Error> {
         match self.frames.next() {
             Some(Frame::BulkString(s)) => {
-                std::str::from_utf8(&s[..])?;
+                std::str::from_utf8(&s)?;
                 Ok(Some(s))
             }
             Some(f) => Err(Error::BadFrame(f)),

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use criterion::black_box;
 use opal::storage::{
-    Config, BitcaskKeyValueStorage, DashMapKeyValueStorage, KeyValueStorage, SledKeyValueStorage,
+    BitcaskKeyValueStorage, Config, DashMapKeyValueStorage, KeyValueStorage, SledKeyValueStorage,
 };
 use rand::{
     distributions::{Standard, Uniform},

@@ -38,11 +38,7 @@ impl Client {
     #[tracing::instrument(skip(self))]
     pub async fn del(&mut self, keys: Vec<String>) -> Result<i64, super::Error> {
         // already checked for non-empty slice with the if-condition
-        let cmd = Del::new(
-            keys.iter()
-                .map(|k| Bytes::copy_from_slice(k.as_bytes()))
-                .collect(),
-        );
+        let cmd = Del::new(keys.into_iter().map(Bytes::from).collect());
         let frame: Frame = cmd.into();
         debug!(request = ?frame);
 
@@ -59,8 +55,8 @@ impl Client {
     ///
     /// Returns `None` if the key does not exist.
     #[tracing::instrument(skip(self))]
-    pub async fn get(&mut self, key: &str) -> Result<Option<Bytes>, super::Error> {
-        let cmd = Get::new(Bytes::copy_from_slice(key.as_bytes()));
+    pub async fn get(&mut self, key: String) -> Result<Option<Bytes>, super::Error> {
+        let cmd = Get::new(Bytes::from(key));
         let frame: Frame = cmd.into();
         debug!(request = ?frame);
 
@@ -87,11 +83,8 @@ impl Client {
     /// - (unsupported) KEEPTTL -- Retain the time to live associated with the key.
     /// - (unsupported) GET -- Return the old string stored at key, or nil if key did not exist. An error is returned and SET aborted if the value stored at key is not a string.
     #[tracing::instrument(skip(self))]
-    pub async fn set(&mut self, key: &str, value: &[u8]) -> Result<(), super::Error> {
-        let cmd = Set::new(
-            Bytes::copy_from_slice(key.as_bytes()),
-            Bytes::copy_from_slice(value),
-        );
+    pub async fn set(&mut self, key: String, value: Bytes) -> Result<(), super::Error> {
+        let cmd = Set::new(Bytes::from(key), value);
         let frame: Frame = cmd.into();
         debug!(request = ?frame);
 
