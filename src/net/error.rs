@@ -2,7 +2,7 @@ use std::io;
 
 use thiserror::Error;
 
-use super::{cmd, frame};
+use super::{command, frame};
 
 /// Error from running the server/client
 #[derive(Error, Debug)]
@@ -17,7 +17,7 @@ pub enum Error {
 
     /// Error from parsing a commad.
     #[error("Command error - {0}")]
-    Command(#[from] cmd::Error),
+    Command(#[from] command::Error),
 
     /// Error from I/O operations.
     #[error("I/O error - {0}")]

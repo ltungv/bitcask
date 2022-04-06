@@ -3,7 +3,7 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::debug;
 
 use super::{
-    cmd::{self, Del, Get, Set},
+    command::{self, Del, Get, Set},
     connection::Connection,
     frame::Frame,
 };
@@ -51,7 +51,7 @@ impl Client {
         // Wait for the response from the server
         match self.read_response().await? {
             Frame::Integer(n) => Ok(n),
-            f => Err(cmd::Error::BadFrame(f).into()),
+            f => Err(command::Error::BadFrame(f).into()),
         }
     }
 
@@ -70,7 +70,7 @@ impl Client {
         match self.read_response().await? {
             Frame::BulkString(s) => Ok(Some(s)), // retrieved key's value
             Frame::Null => Ok(None),             // key does not exist
-            f => Err(cmd::Error::BadFrame(f).into()),
+            f => Err(command::Error::BadFrame(f).into()),
         }
     }
 
@@ -100,7 +100,7 @@ impl Client {
         // Wait for the response from the server
         match self.read_response().await? {
             Frame::SimpleString(s) if s == "OK" => Ok(()), // suceeded
-            f => Err(cmd::Error::BadFrame(f).into()),      // error occured / unsupported reply
+            f => Err(command::Error::BadFrame(f).into()),  // error occured / unsupported reply
         }
     }
 

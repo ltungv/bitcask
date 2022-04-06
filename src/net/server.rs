@@ -9,7 +9,7 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
-use super::{cmd::Command, connection::Connection, shutdown::Shutdown};
+use super::{command::Command, connection::Connection, shutdown::Shutdown};
 use crate::storage::KeyValueStorage;
 
 /// Max number of concurrent connections that can be served by the server.
