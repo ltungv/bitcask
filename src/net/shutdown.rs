@@ -2,7 +2,7 @@ use tokio::sync::broadcast;
 
 /// Listens for the server shutdown signal.
 ///
-/// Only a single shutdown signal is every sent, after which the server
+/// Only a single shutdown signal is ever sent, after which the server
 /// should shutdown. This struct can be queried to check whether signal
 /// has been received.
 pub struct Shutdown {
@@ -14,8 +14,9 @@ pub struct Shutdown {
 }
 
 impl Shutdown {
-    /// Returns a new `Shutdown` with the given [`broadcast::Receiver`].
+    /// Returns a new [`Shutdown`] with the given [`broadcast::Receiver`].
     ///
+    /// [`Shutdown`]: opal::net::Shutdown
     /// [`broadcast::Receiver`]: tokio::sync::broadcast::Receiver
     pub fn new(notify: broadcast::Receiver<()>) -> Self {
         Self {
@@ -24,7 +25,7 @@ impl Shutdown {
         }
     }
 
-    /// Returns `true` if the shutdown signal has been received.
+    /// Returns `true` if a shutdown signal has been received.
     pub fn is_shutdown(&self) -> bool {
         self.shutdown
     }
