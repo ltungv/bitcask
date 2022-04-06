@@ -10,7 +10,6 @@ pub use set::Set;
 
 use std::convert::TryFrom;
 
-use anyhow::Result;
 use bytes::Bytes;
 use thiserror::Error;
 
