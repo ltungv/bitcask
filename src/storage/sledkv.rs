@@ -19,21 +19,17 @@ impl SledKeyValueStorage {
 impl KeyValueStorage for SledKeyValueStorage {
     type Error = sled::Error;
 
-    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
-        self.db
-            .remove(key)
-            .map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
+    fn del(&self, key: Bytes) -> Result<bool, Self::Error> {
+        self.db.remove(key).map(|v| v.is_some())
     }
 
-    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
-        self.db
-            .get(key)
-            .map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.db.get(key).map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
     }
 
-    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
+    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error> {
         self.db
-            .insert(IVec::from(key.as_ref()), IVec::from(value.as_ref()))
-            .map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
+            .insert(IVec::from(key.as_ref()), IVec::from(value.as_ref()))?;
+        Ok(())
     }
 }

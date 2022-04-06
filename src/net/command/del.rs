@@ -31,10 +31,10 @@ impl Del {
         // Delete the keys and count the number of deletions
         let count = tokio::task::spawn_blocking(move || {
             let mut count = 0;
-            for key in &self.keys {
+            for key in self.keys {
                 match storage.del(key) {
-                    Ok(Some(_)) => count += 1,
-                    Ok(None) => continue,
+                    Ok(true) => count += 1,
+                    Ok(false) => continue,
                     Err(e) => return Err(e),
                 };
             }

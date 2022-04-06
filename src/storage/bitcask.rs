@@ -41,15 +41,15 @@ pub struct BitcaskKeyValueStorage(Bitcask);
 impl KeyValueStorage for BitcaskKeyValueStorage {
     type Error = Error;
 
-    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
+    fn del(&self, key: Bytes) -> Result<bool, Self::Error> {
         self.0.delete(key)
     }
 
-    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error> {
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error> {
         self.0.get(key)
     }
 
-    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error> {
+    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error> {
         self.0.put(key, value)
     }
 }
@@ -200,15 +200,15 @@ impl Bitcask {
         Ok(Bitcask { writer, readers })
     }
 
-    fn put(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Error> {
+    fn put(&self, key: Bytes, value: Bytes) -> Result<(), Error> {
         self.writer.lock().put(key, value)
     }
 
-    fn delete(&self, key: &Bytes) -> Result<Option<Bytes>, Error> {
+    fn delete(&self, key: Bytes) -> Result<bool, Error> {
         self.writer.lock().delete(key)
     }
 
-    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Error> {
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
         let backoff = Backoff::new();
         loop {
             if let Some(reader) = self.readers.pop() {
@@ -231,29 +231,13 @@ impl Writer {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn put(&mut self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Error> {
+    fn put(&mut self, key: Bytes, value: Bytes) -> Result<(), Error> {
         let tstamp = utils::timestamp();
-        let keydir_entry = self.put_data(tstamp, &key, &value)?;
-        match self.ctx.keydir.insert(key, keydir_entry) {
-            Some(prev_keydir_entry) => {
-                // SAFETY: We have taken `prev_keydir_entry` from KeyDir which is ensured to point
-                // to valid data file positions. Thus we can be confident that the Mmap won't be
-                // mapped to an invalid segment.
-                let prev_datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
-                        .get(self.ctx.path.as_path(), prev_keydir_entry.fileid)?
-                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
-                };
-
-                // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
-                // we invalidate the returned file position.
-                self.collect_dead_bytes(prev_keydir_entry.len)?;
-
-                Ok(prev_datafile_entry.value)
-            }
-            None => Ok(None),
+        let keydir_entry = self.write(tstamp, key.clone(), Some(value))?;
+        if let Some(prev_keydir_entry) = self.ctx.keydir.insert(key, keydir_entry) {
+            self.collect_dead_bytes(prev_keydir_entry.len)?;
         }
+        Ok(())
     }
 
     /// Delete a key and returning its value, if it exists, otherwise return `None`.
@@ -261,27 +245,14 @@ impl Writer {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn delete(&mut self, key: &Bytes) -> Result<Option<Bytes>, Error> {
-        self.put_tombstone(utils::timestamp(), key)?;
-        match self.ctx.keydir.remove(key) {
+    fn delete(&mut self, key: Bytes) -> Result<bool, Error> {
+        self.write(utils::timestamp(), key.clone(), None)?;
+        match self.ctx.keydir.remove(&key) {
             Some((_, prev_keydir_entry)) => {
-                // SAFETY: We have taken `prev_keydir_entry` from KeyDir which is ensured to point
-                // to valid data file positions. Thus we can be confident that the Mmap won't be
-                // mapped to an invalid segment.
-                let prev_datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
-                        .get(self.ctx.path.as_path(), prev_keydir_entry.fileid)?
-                        .at::<DataFileEntry>(prev_keydir_entry.len, prev_keydir_entry.pos)?
-                };
-
-                // SAFETY: We MUST collect the garbage AFTER reading the entry from disk otherwise
-                // we invalidate the returned file position.
                 self.collect_dead_bytes(prev_keydir_entry.len)?;
-
-                Ok(prev_datafile_entry.value)
+                Ok(true)
             }
-            None => Ok(None),
+            None => Ok(false),
         }
     }
 
@@ -305,9 +276,9 @@ impl Writer {
 
             let mut readers = self.readers.borrow_mut();
             for mut keydir_entry in self.ctx.keydir.iter_mut() {
-                // NOTE: Unsafe usage.
-                // We ensure in `BitcaskWriter` that all log entries given by KeyDir are written disk,
-                // thus the readers can savely use memmap to access the data file randomly.
+                // SAFETY: We ensure in `BitcaskWriter` that all log entries given by
+                // KeyDir are written disk, thus the readers can savely use memmap to
+                // access the data file randomly.
                 let nbytes = unsafe {
                     readers.get(path, keydir_entry.fileid)?.copy_raw(
                         keydir_entry.len,
@@ -363,32 +334,13 @@ impl Writer {
         Ok(())
     }
 
-    /// Apppend a data entry to the active data file.
-    fn put_data(&mut self, tstamp: u128, key: &Bytes, value: &Bytes) -> Result<KeyDirEntry, Error> {
-        let datafile_entry = DataFileEntry {
-            tstamp,
-            key: key.clone(),
-            value: Some(value.clone()),
-        };
-        let keydir_entry = self.write(tstamp, datafile_entry)?;
-        self.collect_written(keydir_entry.len)?;
-        Ok(keydir_entry)
-    }
-
-    /// Apppend a tomestone entry to the active data file.
-    fn put_tombstone(&mut self, tstamp: u128, key: &Bytes) -> Result<(), Error> {
-        let datafile_entry = DataFileEntry {
-            tstamp,
-            key: key.clone(),
-            value: None,
-        };
-        let keydir_entry = self.write(tstamp, datafile_entry)?;
-        self.dead_bytes += keydir_entry.len; // tombstones are wasted space
-        self.collect_written(keydir_entry.len)?;
-        Ok(())
-    }
-
-    fn write(&mut self, tstamp: u128, datafile_entry: DataFileEntry) -> Result<KeyDirEntry, Error> {
+    fn write(
+        &mut self,
+        tstamp: u128,
+        key: Bytes,
+        value: Option<Bytes>,
+    ) -> Result<KeyDirEntry, Error> {
+        let datafile_entry = DataFileEntry { tstamp, key, value };
         let index = self.writer.append(&datafile_entry)?;
         let keydir_entry = KeyDirEntry {
             fileid: self.active_fileid,
@@ -396,6 +348,10 @@ impl Writer {
             pos: index.pos,
             tstamp,
         };
+        if datafile_entry.value.is_none() {
+            self.dead_bytes += keydir_entry.len; // tombstones are wasted space
+        }
+        self.collect_written(keydir_entry.len)?;
         Ok(keydir_entry)
     }
 
@@ -438,8 +394,8 @@ impl Reader {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Error> {
-        match self.ctx.keydir.get(key) {
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
+        match self.ctx.keydir.get(&key) {
             Some(keydir_entry) => {
                 let mut readers = self.readers.borrow_mut();
                 readers.drop_stale(self.ctx.min_fileid.load());
@@ -585,7 +541,7 @@ mod tests {
         proptest!(|(key in collection::vec(any::<u8>(), 0..64),
                     value in collection::vec(any::<u8>(), 0..256))| {
             kv.put(Bytes::from(key.clone()), Bytes::from(value.clone())).unwrap();
-            let value_from_kv = kv.get(&Bytes::from(key)).unwrap();
+            let value_from_kv = kv.get(Bytes::from(key)).unwrap();
             prop_assert_eq!(Some(Bytes::from(value)), value_from_kv);
         });
     }

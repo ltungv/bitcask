@@ -27,7 +27,7 @@ impl Get {
         KV: KeyValueStorage,
     {
         // Get the key's value
-        let result = tokio::task::spawn_blocking(move || storage.get(&self.key))
+        let result = tokio::task::spawn_blocking(move || storage.get(self.key))
             .await?
             .map_err(|e| net::Error::Storage(e.into()))?;
 

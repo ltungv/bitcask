@@ -6,7 +6,7 @@ mod sledkv;
 
 use bytes::Bytes;
 
-pub use bitcask::{Config, BitcaskKeyValueStorage};
+pub use bitcask::{BitcaskKeyValueStorage, Config};
 pub use dashmapkv::DashMapKeyValueStorage;
 pub use sledkv::SledKeyValueStorage;
 
@@ -18,11 +18,11 @@ pub trait KeyValueStorage: Clone + Send + 'static {
 
     /// Set the value of a key, overwriting any existing value at that key and return the overwritten
     /// value
-    fn set(&self, key: Bytes, value: Bytes) -> Result<Option<Bytes>, Self::Error>;
+    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error>;
 
     /// Get the value of a key, if it exists. Return `None` if there's no value for the given key
-    fn get(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error>;
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error>;
 
     /// Delete a key and return its value, if it exists. Return `None` if the key does not exist
-    fn del(&self, key: &Bytes) -> Result<Option<Bytes>, Self::Error>;
+    fn del(&self, key: Bytes) -> Result<bool, Self::Error>;
 }
