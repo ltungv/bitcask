@@ -24,11 +24,11 @@ pub enum Error {
     BadArguments,
 
     /// Encountered an invalid command
-    #[error("Found an invalid command (got {0:?})")]
+    #[error("Invalid command (got {0:?})")]
     BadCommand(String),
 
     /// Encountered an unexpected frame
-    #[error("Found an invalid frame (got {0:?})")]
+    #[error("Invalid frame (got {0:?})")]
     BadFrame(Frame),
 
     /// Could not parse utf8 string

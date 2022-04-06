@@ -8,7 +8,7 @@ use super::{command, frame};
 #[derive(Error, Debug)]
 pub enum Error {
     /// Error from the storage engine.
-    #[error("Storage engine failed - {0}")]
+    #[error("Storage engine error - {0}")]
     Storage(#[source] anyhow::Error),
 
     /// Error from parsing a frame.
