@@ -258,10 +258,12 @@ impl Writer {
 
     /// Merge data files by copying data from previous data files to the merge data file. Old data
     /// files are deleted after the merge.
+    #[tracing::instrument(skip(self))]
     fn merge(&mut self) -> Result<(), Error> {
         let path = self.ctx.path.as_path();
         let min_merge_fileid = self.active_fileid + 1;
         let mut merge_fileid = min_merge_fileid;
+        debug!(merge_fileid, "new merge file");
 
         // NOTE: we use an explicit scope here to control the lifetimes of `readers`,
         // `merge_datafile_writer` and `merge_hintfile_writer`. We drop the readers
@@ -307,6 +309,7 @@ impl Writer {
                         BufWriter::new(log::create(utils::datafile_name(path, merge_fileid))?);
                     merge_hintfile_writer =
                         LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
+                    debug!(merge_fileid, "new merge file");
                 }
             }
             readers.drop_stale(merge_fileid);
@@ -334,6 +337,7 @@ impl Writer {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, key, value))]
     fn write(
         &mut self,
         tstamp: u128,
@@ -356,6 +360,7 @@ impl Writer {
     }
 
     /// Updates the active file ID and open a new data file with the new active ID.
+    #[tracing::instrument(skip(self))]
     fn new_active_datafile(&mut self, fileid: u64) -> Result<(), Error> {
         self.active_fileid = fileid;
         self.writer = LogWriter::new(log::create(utils::datafile_name(
@@ -394,6 +399,7 @@ impl Reader {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
+    #[tracing::instrument(skip(self, key))]
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
         match self.ctx.keydir.get(&key) {
             Some(keydir_entry) => {
