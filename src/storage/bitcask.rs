@@ -1,8 +1,11 @@
 //! An implementation of [Bitcask](https://riak.com/assets/bitcask-intro.pdf).
 
 mod bufio;
+mod config;
 mod log;
 mod utils;
+
+pub use config::Config;
 
 use std::{
     cell::RefCell,
@@ -13,7 +16,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use bytesize::{ByteSize, GIB, MIB};
 use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -57,59 +59,6 @@ impl KeyValueStorage for BitcaskKeyValueStorage {
 impl From<Bitcask> for BitcaskKeyValueStorage {
     fn from(bitcask: Bitcask) -> Self {
         Self(bitcask)
-    }
-}
-
-/// Configuration for a `Bitcask` instance.
-#[derive(Debug, Clone)]
-pub struct Config {
-    max_file_size: u64,
-    merge_strategy: MergeStrategy,
-    concurrency: usize,
-}
-
-/// Bitcask data files merge strategy.
-#[derive(Debug, Clone)]
-pub enum MergeStrategy {
-    /// The data files are merged when the number of current dead bytes reaches this value
-    DeadBytes(u64),
-}
-
-impl Config {
-    /// Create a `Bitcask` instance at the given path with the available options.
-    pub fn open<P>(self, path: P) -> Result<Bitcask, Error>
-    where
-        P: AsRef<Path>,
-    {
-        Bitcask::open(path, self)
-    }
-
-    /// Set the max data file size. The writer will open a new data file when reaches this value.
-    pub fn max_file_size(mut self, max_file_size: ByteSize) -> Self {
-        self.max_file_size = max_file_size.as_u64();
-        self
-    }
-
-    /// Set the merge strategy to max dead bytes.
-    pub fn max_dead_bytes(mut self, max_dead_bytes: ByteSize) -> Self {
-        self.merge_strategy = MergeStrategy::DeadBytes(max_dead_bytes.as_u64());
-        self
-    }
-
-    /// Set the max number of concurrent readers.
-    pub fn concurrency(mut self, concurrency: usize) -> Self {
-        self.concurrency = concurrency;
-        self
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            max_file_size: 2 * GIB,
-            merge_strategy: MergeStrategy::DeadBytes(512 * MIB),
-            concurrency: num_cpus::get(),
-        }
     }
 }
 
