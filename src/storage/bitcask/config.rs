@@ -79,7 +79,7 @@ impl Default for Config {
 
 impl Config {
     /// Create a `Bitcask` instance at the given path with the available options.
-    pub fn open<P>(&self, path: P) -> Result<Bitcask, super::Error>
+    pub fn open<P>(self, path: P) -> Result<Bitcask, super::Error>
     where
         P: AsRef<Path>,
     {

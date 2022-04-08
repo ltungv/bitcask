@@ -80,13 +80,13 @@ pub async fn main() -> Result<(), anyhow::Error> {
         Commands::Bitcask(args) => {
             let mut conf = Config::default();
             if let Some(n) = args.max_file_size {
-                conf = conf.max_file_size(n);
+                conf.max_file_size(n);
             }
             if let Some(n) = args.max_dead_bytes {
-                conf = conf.max_dead_bytes(n);
+                conf.merge_trigger_dead_bytes(n);
             }
             if let Some(n) = args.concurrency {
-                conf = conf.concurrency(n);
+                conf.concurrency(n);
             }
 
             let db_dir = args.path.unwrap_or(env::current_dir()?);

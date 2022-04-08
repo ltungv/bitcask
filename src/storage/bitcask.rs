@@ -83,6 +83,7 @@ pub struct Bitcask {
     readers: Arc<ArrayQueue<Reader>>,
 }
 
+/// The context holds states that are shared across both reads and writes operations.
 #[derive(Debug, Clone)]
 struct Context {
     conf: Arc<Config>,
@@ -91,6 +92,8 @@ struct Context {
     keydir: Arc<DashMap<Bytes, KeyDirEntry>>,
 }
 
+/// The writer appends log entries to data files and ensures that indices in KeyDir point to a valid
+/// file locations.
 #[derive(Debug)]
 struct Writer {
     ctx: Context,
@@ -101,6 +104,9 @@ struct Writer {
     dead_bytes: u64,
 }
 
+/// The reader reads log entries from data files given the locations found in KeyDir. Since data files
+/// are immutable (except for the active one), we can safely read them concurrently without extra
+/// synchronizations between threads.
 #[derive(Debug)]
 struct Reader {
     ctx: Context,
@@ -214,6 +220,10 @@ impl Writer {
         let mut merge_fileid = min_merge_fileid;
         debug!(merge_fileid, "new merge file");
 
+        // TODO: periodically check whether we need to merge given the triggers. Once the conditions
+        // given the the triggers are met, we should only merge files that met the conditions given
+        // by the thresholds.
+
         // NOTE: we use an explicit scope here to control the lifetimes of `readers`,
         // `merge_datafile_writer` and `merge_hintfile_writer`. We drop the readers
         // early so we can later mutably borrow `self` and drop the writers early so
@@ -251,7 +261,7 @@ impl Writer {
                     key: keydir_entry.key().clone(),
                 })?;
 
-                if merge_pos > self.ctx.conf.max_file_size {
+                if merge_pos > self.ctx.conf.max_file_size.as_u64() {
                     merge_pos = 0;
                     merge_fileid += 1;
                     merge_datafile_writer =
@@ -324,7 +334,7 @@ impl Writer {
     /// reaches the data file size threshold
     fn collect_written(&mut self, sz: u64) -> Result<(), Error> {
         self.written_bytes += sz;
-        if self.written_bytes > self.ctx.conf.max_file_size {
+        if self.written_bytes > self.ctx.conf.max_file_size.as_u64() {
             self.new_active_datafile(self.active_fileid + 1)?;
         }
         Ok(())
@@ -334,8 +344,7 @@ impl Writer {
     /// garbage threshold.
     fn collect_dead_bytes(&mut self, sz: u64) -> Result<(), Error> {
         self.dead_bytes += sz;
-        let MergeStrategy::DeadBytes(n) = self.ctx.conf.merge_strategy;
-        if self.dead_bytes > n {
+        if self.dead_bytes > self.ctx.conf.merge.triggers.dead_bytes.as_u64() {
             self.merge()?;
         }
         Ok(())
@@ -491,7 +500,9 @@ mod tests {
     #[test]
     fn bitcask_seq_read_after_write_should_return_the_written_data() {
         let dir = tempfile::tempdir().unwrap();
-        let kv = Config::default().concurrency(1).open(dir.path()).unwrap();
+        let mut conf = Config::default();
+        conf.concurrency(1);
+        let kv = conf.open(dir.path()).unwrap();
 
         proptest!(|(key in collection::vec(any::<u8>(), 0..64),
                     value in collection::vec(any::<u8>(), 0..256))| {
