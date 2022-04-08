@@ -187,13 +187,13 @@ impl Writer {
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
     fn put(&mut self, key: Bytes, value: Bytes) -> Result<(), Error> {
-        let tstamp = utils::timestamp();
-        let keydir_entry = self.write(tstamp, key.clone(), Some(value))?;
+        let keydir_entry = self.write(utils::timestamp(), key.clone(), Some(value))?;
         if let Some(prev_keydir_entry) = self.ctx.keydir.insert(key, keydir_entry) {
-            let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
-            stats.live_keys -= 1;
-            stats.dead_keys += 1;
-            stats.dead_bytes += prev_keydir_entry.len;
+            self.ctx
+                .stats
+                .entry(prev_keydir_entry.fileid)
+                .or_default()
+                .overwrite(prev_keydir_entry.len);
         }
         Ok(())
     }
@@ -207,10 +207,11 @@ impl Writer {
         self.write(utils::timestamp(), key.clone(), None)?;
         match self.ctx.keydir.remove(&key) {
             Some((_, prev_keydir_entry)) => {
-                let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
-                stats.live_keys -= 1;
-                stats.dead_keys += 1;
-                stats.dead_bytes += prev_keydir_entry.len;
+                self.ctx
+                    .stats
+                    .entry(prev_keydir_entry.fileid)
+                    .or_default()
+                    .overwrite(prev_keydir_entry.len);
                 Ok(true)
             }
             None => Ok(false),
@@ -238,24 +239,24 @@ impl Writer {
         // Collect statistics of the active data file for the merging process. If we add
         // a value to a key, we increase the number of live keys. If we add a tombstone,
         // we increase the number of dead keys.
-        let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
-        if datafile_entry.value.is_some() {
-            stats.live_keys += 1;
-        } else {
-            stats.dead_keys += 1;
-            stats.dead_bytes += keydir_entry.len;
+        {
+            let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
+            if datafile_entry.value.is_some() {
+                stats.add_live();
+            } else {
+                stats.add_dead(index.len);
+            }
+            debug!(
+                entry_len = %keydir_entry.len,
+                entry_pos = %keydir_entry.pos,
+                active_fileid = %keydir_entry.fileid,
+                active_file_size = %self.written_bytes,
+                active_live_keys = %stats.live_keys,
+                active_dead_keys = %stats.dead_keys,
+                active_dead_bytes = %stats.dead_bytes,
+                "appended new log entry"
+            );
         }
-        debug!(
-            entry_len = %keydir_entry.len,
-            entry_pos = %keydir_entry.pos,
-            active_fileid = %keydir_entry.fileid,
-            active_file_size = %self.written_bytes,
-            active_live_keys = %stats.live_keys,
-            active_dead_keys = %stats.dead_keys,
-            active_dead_bytes = %stats.dead_bytes,
-            "appended new log entry"
-        );
-        drop(stats); // drop so we no longer borrow self.
 
         // Check if it exceeds the max limit.
         if self.written_bytes > self.ctx.conf.max_file_size.as_u64() {
@@ -423,6 +424,23 @@ struct LogStatistics {
     dead_bytes: u64,
 }
 
+impl LogStatistics {
+    fn add_live(&mut self) {
+        self.live_keys += 1;
+    }
+
+    fn add_dead(&mut self, nbytes: u64) {
+        self.dead_keys += 1;
+        self.dead_bytes += nbytes;
+    }
+
+    fn overwrite(&mut self, nbytes: u64) {
+        self.live_keys -= 1;
+        self.dead_keys += 1;
+        self.dead_bytes += nbytes;
+    }
+}
+
 /// Read the given directory, rebuild the KeyDir, and gather statistics about the Bitcask instance
 /// at that directory.
 #[allow(clippy::type_complexity)]
@@ -454,25 +472,17 @@ where
                 }
             }
         }
-        match log::open(utils::hintfile_name(&path, fileid)) {
-            Ok(f) => {
-                // Read the hint file if it exists.
-                stats.insert(fileid, populate_keydir_with_hintfile(&keydir, f, fileid)?);
+        if let Err(e) = populate_keydir_with_hintfile(&path, fileid, &keydir, &stats) {
+            match e {
+                Error::Io(ref ioe) => match ioe.kind() {
+                    io::ErrorKind::NotFound => {
+                        // Read the data file if the hint file does not exist.
+                        populate_keydir_with_datafile(&path, fileid, &keydir, &stats)?;
+                    }
+                    _ => return Err(e),
+                },
+                _ => return Err(e),
             }
-            Err(e) => match e.kind() {
-                io::ErrorKind::NotFound => {
-                    // Read the data file if the hint file does not exist.
-                    stats.insert(
-                        fileid,
-                        populate_keydir_with_datafile(
-                            &keydir,
-                            log::open(utils::datafile_name(&path, fileid))?,
-                            fileid,
-                        )?,
-                    );
-                }
-                _ => return Err(e.into()),
-            },
         }
     }
 
@@ -480,42 +490,52 @@ where
     Ok((keydir, stats, active_fileid))
 }
 
-fn populate_keydir_with_hintfile(
-    keydir: &DashMap<Bytes, KeyDirEntry>,
-    file: fs::File,
+fn populate_keydir_with_hintfile<P>(
+    path: P,
     fileid: u64,
-) -> Result<LogStatistics, Error> {
-    let mut stats = LogStatistics::default();
+    keydir: &DashMap<Bytes, KeyDirEntry>,
+    stats: &DashMap<u64, LogStatistics>,
+) -> Result<(), Error>
+where
+    P: AsRef<Path>,
+{
+    let file = log::open(utils::hintfile_name(&path, fileid))?;
     let mut hintfile_iter = LogIterator::new(file)?;
     while let Some((_, entry)) = hintfile_iter.next::<HintFileEntry>()? {
-        // Indices given by the hint file do not point to tombstones.
         let keydir_entry = KeyDirEntry {
             fileid,
             len: entry.len,
             pos: entry.pos,
             tstamp: entry.tstamp,
         };
-        keydir.insert(entry.key, keydir_entry);
-        // We have a live key after adding a value
-        stats.live_keys += 1;
+        stats.entry(fileid).or_default().add_live();
+        if let Some(prev_keydir_entry) = keydir.insert(entry.key, keydir_entry) {
+            stats
+                .entry(prev_keydir_entry.fileid)
+                .or_default()
+                .overwrite(prev_keydir_entry.len);
+        }
     }
-    Ok(stats)
+    Ok(())
 }
 
-fn populate_keydir_with_datafile(
-    keydir: &DashMap<Bytes, KeyDirEntry>,
-    file: fs::File,
+fn populate_keydir_with_datafile<P>(
+    path: P,
     fileid: u64,
-) -> Result<LogStatistics, Error> {
-    let mut stats = LogStatistics::default();
+    keydir: &DashMap<Bytes, KeyDirEntry>,
+    stats: &DashMap<u64, LogStatistics>,
+) -> Result<(), Error>
+where
+    P: AsRef<Path>,
+{
+    let file = log::open(utils::datafile_name(&path, fileid))?;
     let mut datafile_iter = LogIterator::new(file)?;
     while let Some((datafile_index, datafile_entry)) = datafile_iter.next::<DataFileEntry>()? {
         match datafile_entry.value {
-            None => {
-                // A tombstone is by definition a dead key
-                stats.dead_keys += 1;
-                stats.dead_bytes += datafile_index.len;
-            }
+            None => stats
+                .entry(fileid)
+                .or_default()
+                .add_dead(datafile_index.len),
             Some(_) => {
                 let keydir_entry = KeyDirEntry {
                     fileid,
@@ -523,34 +543,30 @@ fn populate_keydir_with_datafile(
                     pos: datafile_index.pos,
                     tstamp: datafile_entry.tstamp,
                 };
-                match keydir.insert(datafile_entry.key, keydir_entry) {
-                    None => {
-                        // We have a live key after adding a value
-                        stats.live_keys += 1;
-                    }
-                    Some(prev_keydir_entry) => {
-                        // We have a new dead key after overwriting a value
-                        stats.dead_keys += 1;
-                        stats.dead_bytes += prev_keydir_entry.len;
-                    }
+                stats.entry(fileid).or_default().add_live();
+                if let Some(prev_keydir_entry) = keydir.insert(datafile_entry.key, keydir_entry) {
+                    stats
+                        .entry(prev_keydir_entry.fileid)
+                        .or_default()
+                        .overwrite(prev_keydir_entry.len);
                 }
             }
         }
     }
-    Ok(stats)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use bytesize::ByteSize;
     use proptest::{collection, prelude::*};
 
     use super::*;
 
     #[test]
-    fn bitcask_seq_read_after_write_should_return_the_written_data() {
+    fn bitcask_sequential_read_after_write_should_return_the_written_data() {
         let dir = tempfile::tempdir().unwrap();
-        let mut conf = Config::default();
-        conf.concurrency(1);
+        let conf = Config::default().concurrency(1).to_owned();
         let kv = conf.open(dir.path()).unwrap();
 
         proptest!(|(key in collection::vec(any::<u8>(), 0..64),
@@ -562,23 +578,125 @@ mod tests {
     }
 
     #[test]
+    fn bitcask_rebuilt_keydir_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        // create lots of small files to test reading across different files
+        let conf = Config::default()
+            .concurrency(1)
+            .max_file_size(ByteSize::kib(64))
+            .to_owned();
+        {
+            let kv = conf.clone().open(dir.path()).unwrap();
+            // put 10000 different keys
+            for i in 0..10000 {
+                kv.put(
+                    Bytes::from(format!("key{}", i)),
+                    Bytes::from(format!("value{}", i)),
+                )
+                .unwrap();
+            }
+        }
+
+        // rebuild bitcask
+        let kv = conf.open(dir.path()).unwrap();
+        // get 10000 different keys
+        for i in 0..10000 {
+            let value = kv.get(Bytes::from(format!("key{}", i))).unwrap().unwrap();
+            assert_eq!(Bytes::from(format!("value{}", i)), value);
+        }
+    }
+
+    #[test]
+    fn bitcask_rebuilt_stats_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        // create lots of small files to test reading across different files
+        let conf = Config::default()
+            .concurrency(1)
+            .max_file_size(ByteSize::kib(64))
+            .to_owned();
+        {
+            let kv = conf.clone().open(dir.path()).unwrap();
+            // put 10000 different keys
+            for i in 0..10000 {
+                kv.put(
+                    Bytes::from(format!("key{}", i)),
+                    Bytes::from(format!("value{}", i)),
+                )
+                .unwrap();
+            }
+            // overwrite 5000 keys
+            for i in 0..5000 {
+                kv.put(
+                    Bytes::from(format!("key{}", i)),
+                    Bytes::from(format!("value{}", i)),
+                )
+                .unwrap();
+            }
+        }
+
+        // rebuild bitcask
+        let kv = conf.open(dir.path()).unwrap();
+        // should get 10000 live keys and 5000 dead keys.
+        let mut lives = 0;
+        let mut deads = 0;
+        let writer = kv.writer.lock();
+        for e in writer.ctx.stats.iter() {
+            lives += e.live_keys;
+            deads += e.dead_keys;
+        }
+        assert_eq!(10000, lives);
+        assert_eq!(5000, deads);
+    }
+
+    #[test]
     fn bitcask_collect_statistics() {
         let dir = tempfile::tempdir().unwrap();
-        let conf = Config::default().concurrency(1).to_owned();
+        // create lots of small files to test reading across different files
+        let conf = Config::default()
+            .concurrency(1)
+            .max_file_size(ByteSize::kib(64))
+            .to_owned();
         let kv = conf.open(dir.path()).unwrap();
+        // put 10000 different keys
+        for i in 0..10000 {
+            kv.put(
+                Bytes::from(format!("key{}", i)),
+                Bytes::from(format!("value{}", i)),
+            )
+            .unwrap();
+        }
+        // should get 10000 live keys and 0 dead keys.
+        let mut lives = 0;
+        let mut deads = 0;
+        {
+            let writer = kv.writer.lock();
+            for e in writer.ctx.stats.iter() {
+                lives += e.live_keys;
+                deads += e.dead_keys;
+            }
+        }
+        assert_eq!(10000, lives);
+        assert_eq!(0, deads);
 
-        // put 3 different keys
-        kv.put(Bytes::from("key1"), Bytes::from("value1")).unwrap();
-        kv.put(Bytes::from("key2"), Bytes::from("value2")).unwrap();
-        kv.put(Bytes::from("key3"), Bytes::from("value3")).unwrap();
-        // should count 3 live keys
-        assert_eq!(3, kv.writer.lock().ctx.stats.get(&0).unwrap().live_keys);
-
-        // overwrite 2 keys
-        kv.put(Bytes::from("key2"), Bytes::from("value2")).unwrap();
-        kv.put(Bytes::from("key3"), Bytes::from("value3")).unwrap();
-        // should count 3 live keys and 2 dead keys
-        assert_eq!(3, kv.writer.lock().ctx.stats.get(&0).unwrap().live_keys);
-        assert_eq!(2, kv.writer.lock().ctx.stats.get(&0).unwrap().dead_keys);
+        // overwrite 5000 keys
+        for i in 0..5000 {
+            kv.put(
+                Bytes::from(format!("key{}", i)),
+                Bytes::from(format!("value{}", i)),
+            )
+            .unwrap();
+        }
+        // should get 10000 live keys and 5000 dead keys.
+        let mut lives = 0;
+        let mut deads = 0;
+        {
+            let writer = kv.writer.lock();
+            for e in writer.ctx.stats.iter() {
+                lives += e.live_keys;
+                deads += e.dead_keys;
+            }
+        }
+        assert_eq!(10000, lives);
+        assert_eq!(5000, deads);
     }
 }
