@@ -36,43 +36,26 @@ pub enum Error {
     Serialization(#[from] bincode::Error),
 }
 
-/// A wrapper around [`Bitcask`] that implements the `KeyValueStore` trait.
-#[derive(Clone, Debug)]
-pub struct BitcaskKeyValueStorage(Bitcask);
-
-impl KeyValueStorage for BitcaskKeyValueStorage {
-    type Error = Error;
-
-    fn del(&self, key: Bytes) -> Result<bool, Self::Error> {
-        self.0.delete(key)
-    }
-
-    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error> {
-        self.0.get(key)
-    }
-
-    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error> {
-        self.0.put(key, value)
-    }
-}
-
-impl From<Bitcask> for BitcaskKeyValueStorage {
-    fn from(bitcask: Bitcask) -> Self {
-        Self(bitcask)
-    }
-}
-
-/// Implementation of a Bitcask instance.
-///
-/// The APIs resembles the one given in [bitcask-intro.pdf](https://riak.com/assets/bitcask-intro.pdf)
-/// with a few functions omitted.
+/// An implementation of a Bitcask instance whose APIs resemble the one given in
+/// [bitcask-intro.pdf] but with a few methods omitted.
 ///
 /// Each Bitcask instance is a directory containing data files. At any moment, one file is "active"
 /// for writing, and Bitcask sequentially appends data to the active data file. Bitcask keeps a
 /// "keydir" that maps a key to the position of its value in the data files and uses the keydir to
 /// access the data file entries directly without having to scan all data files.
-#[derive(Clone, Debug)]
+///
+/// Operations on the Bitcask instance are not directly handled by this struct. Instead, it gives
+/// out handles to the Bitcask instance to the threads that need it, and operations on the instance
+/// are concurrently executed through these handles.
+///
+/// [bitcask-intro.pdf]: https://riak.com/assets/bitcask-intro.pdf
 pub struct Bitcask {
+    handle: Handle,
+}
+
+/// A handle to the Bitcask instance that allows multiple different threads to safely access it.
+#[derive(Clone, Debug)]
+pub struct Handle {
     /// A mutex-protected writer used for appending data entry to the active data files. All
     /// operations that make changes to the active data file are delegated to this object.
     writer: Arc<Mutex<Writer>>,
@@ -114,7 +97,29 @@ struct Reader {
 }
 
 impl Bitcask {
-    fn open<P>(path: P, conf: Config) -> Result<Bitcask, Error>
+    pub fn get_handle(&self) -> Handle {
+        self.handle.clone()
+    }
+}
+
+impl KeyValueStorage for Handle {
+    type Error = Error;
+
+    fn del(&self, key: Bytes) -> Result<bool, Self::Error> {
+        self.delete(key)
+    }
+
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.get(key)
+    }
+
+    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error> {
+        self.put(key, value)
+    }
+}
+
+impl Handle {
+    fn open<P>(path: P, conf: Config) -> Result<Handle, Error>
     where
         P: AsRef<Path>,
     {
@@ -152,7 +157,7 @@ impl Bitcask {
             written_bytes: 0,
         }));
 
-        Ok(Bitcask { writer, readers })
+        Ok(Handle { writer, readers })
     }
 
     fn put(&self, key: Bytes, value: Bytes) -> Result<(), Error> {

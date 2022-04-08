@@ -7,7 +7,7 @@ use tokio::signal;
 
 use opal::{
     net::Server,
-    storage::{BitcaskKeyValueStorage, Config, DashMapKeyValueStorage, SledKeyValueStorage},
+    storage::{Config, DashMapKeyValueStorage, SledKeyValueStorage},
     telemetry::{get_subscriber, init_subscriber},
 };
 
@@ -92,8 +92,8 @@ pub async fn main() -> Result<(), anyhow::Error> {
             let db_dir = args.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
-            let storage = BitcaskKeyValueStorage::from(conf.open(db_dir)?);
-            let server = Server::new(listener, storage, signal::ctrl_c());
+            let storage = conf.open(db_dir)?;
+            let server = Server::new(listener, storage.get_handle(), signal::ctrl_c());
             server.run().await;
         }
         Commands::Sled(args) => {

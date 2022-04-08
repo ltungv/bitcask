@@ -6,7 +6,7 @@ mod sledkv;
 
 use bytes::Bytes;
 
-pub use bitcask::{BitcaskKeyValueStorage, Config};
+pub use bitcask::{Handle, Config};
 pub use dashmapkv::DashMapKeyValueStorage;
 pub use sledkv::SledKeyValueStorage;
 

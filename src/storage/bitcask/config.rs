@@ -2,7 +2,7 @@ use std::{ops::Range, path::Path, time};
 
 use bytesize::ByteSize;
 
-use super::Bitcask;
+use super::{Bitcask, Handle};
 
 /// Configuration for a `Bitcask` instance. We try to mirror the configurations
 /// available in [Configuring Bitcask].
@@ -83,7 +83,8 @@ impl Config {
     where
         P: AsRef<Path>,
     {
-        Bitcask::open(path, self)
+        let handle = Handle::open(path, self)?;
+        Ok(Bitcask { handle })
     }
 
     /// Set the max number of concurrent readers. Default to the number of logical cores.
