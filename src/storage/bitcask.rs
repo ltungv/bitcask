@@ -573,11 +573,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conf = Config::default().concurrency(1).to_owned();
         let kv = conf.open(dir.path()).unwrap();
+        let handle = kv.get_handle();
 
         proptest!(|(key in collection::vec(any::<u8>(), 0..64),
                     value in collection::vec(any::<u8>(), 0..256))| {
-            kv.put(Bytes::from(key.clone()), Bytes::from(value.clone())).unwrap();
-            let value_from_kv = kv.get(Bytes::from(key)).unwrap();
+            handle.put(Bytes::from(key.clone()), Bytes::from(value.clone())).unwrap();
+            let value_from_kv = handle.get(Bytes::from(key)).unwrap();
             prop_assert_eq!(Some(Bytes::from(value)), value_from_kv);
         });
     }
@@ -592,21 +593,27 @@ mod tests {
             .to_owned();
         {
             let kv = conf.clone().open(dir.path()).unwrap();
+            let handle = kv.get_handle();
             // put 10000 different keys
             for i in 0..10000 {
-                kv.put(
-                    Bytes::from(format!("key{}", i)),
-                    Bytes::from(format!("value{}", i)),
-                )
-                .unwrap();
+                handle
+                    .put(
+                        Bytes::from(format!("key{}", i)),
+                        Bytes::from(format!("value{}", i)),
+                    )
+                    .unwrap();
             }
         }
 
         // rebuild bitcask
         let kv = conf.open(dir.path()).unwrap();
+        let handle = kv.get_handle();
         // get 10000 different keys
         for i in 0..10000 {
-            let value = kv.get(Bytes::from(format!("key{}", i))).unwrap().unwrap();
+            let value = handle
+                .get(Bytes::from(format!("key{}", i)))
+                .unwrap()
+                .unwrap();
             assert_eq!(Bytes::from(format!("value{}", i)), value);
         }
     }
@@ -619,33 +626,37 @@ mod tests {
             .concurrency(1)
             .max_file_size(ByteSize::kib(64))
             .to_owned();
+
         {
             let kv = conf.clone().open(dir.path()).unwrap();
+            let handle = kv.get_handle();
             // put 10000 different keys
             for i in 0..10000 {
-                kv.put(
-                    Bytes::from(format!("key{}", i)),
-                    Bytes::from(format!("value{}", i)),
-                )
-                .unwrap();
+                handle
+                    .put(
+                        Bytes::from(format!("key{}", i)),
+                        Bytes::from(format!("value{}", i)),
+                    )
+                    .unwrap();
             }
             // overwrite 5000 keys
             for i in 0..5000 {
-                kv.put(
-                    Bytes::from(format!("key{}", i)),
-                    Bytes::from(format!("value{}", i)),
-                )
-                .unwrap();
+                handle
+                    .put(
+                        Bytes::from(format!("key{}", i)),
+                        Bytes::from(format!("value{}", i)),
+                    )
+                    .unwrap();
             }
         }
 
         // rebuild bitcask
         let kv = conf.open(dir.path()).unwrap();
+        let handle = kv.get_handle();
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        let writer = kv.writer.lock();
-        for e in writer.ctx.stats.iter() {
+        for e in handle.ctx.stats.iter() {
             lives += e.live_keys;
             deads += e.dead_keys;
         }
@@ -662,44 +673,41 @@ mod tests {
             .max_file_size(ByteSize::kib(64))
             .to_owned();
         let kv = conf.open(dir.path()).unwrap();
+        let handle = kv.get_handle();
         // put 10000 different keys
         for i in 0..10000 {
-            kv.put(
-                Bytes::from(format!("key{}", i)),
-                Bytes::from(format!("value{}", i)),
-            )
-            .unwrap();
+            handle
+                .put(
+                    Bytes::from(format!("key{}", i)),
+                    Bytes::from(format!("value{}", i)),
+                )
+                .unwrap();
         }
         // should get 10000 live keys and 0 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        {
-            let writer = kv.writer.lock();
-            for e in writer.ctx.stats.iter() {
-                lives += e.live_keys;
-                deads += e.dead_keys;
-            }
+        for e in handle.ctx.stats.iter() {
+            lives += e.live_keys;
+            deads += e.dead_keys;
         }
         assert_eq!(10000, lives);
         assert_eq!(0, deads);
 
         // overwrite 5000 keys
         for i in 0..5000 {
-            kv.put(
-                Bytes::from(format!("key{}", i)),
-                Bytes::from(format!("value{}", i)),
-            )
-            .unwrap();
+            handle
+                .put(
+                    Bytes::from(format!("key{}", i)),
+                    Bytes::from(format!("value{}", i)),
+                )
+                .unwrap();
         }
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        {
-            let writer = kv.writer.lock();
-            for e in writer.ctx.stats.iter() {
-                lives += e.live_keys;
-                deads += e.dead_keys;
-            }
+        for e in handle.ctx.stats.iter() {
+            lives += e.live_keys;
+            deads += e.dead_keys;
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
