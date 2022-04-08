@@ -6,9 +6,11 @@ mod log;
 mod utils;
 
 pub use config::Config;
+use tokio::sync::broadcast;
 
 use std::{
     cell::RefCell,
+    collections::BTreeSet,
     fs,
     io::{self, BufWriter},
     path::{self, Path},
@@ -23,7 +25,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error};
 
+use self::utils::datafile_name;
+
 use super::KeyValueStorage;
+use crate::shutdown::Shutdown;
 use log::{LogDir, LogIterator, LogWriter};
 
 /// Error returned by Bitcask
@@ -34,6 +39,10 @@ pub enum Error {
 
     #[error("Serialization error - {0}")]
     Serialization(#[from] bincode::Error),
+
+    /// Error from running asynchronous tasks.
+    #[error("Asynchronous task error - {0}")]
+    AsyncTask(#[from] tokio::task::JoinError),
 }
 
 /// An implementation of a Bitcask instance whose APIs resemble the one given in
@@ -51,11 +60,15 @@ pub enum Error {
 /// [bitcask-intro.pdf]: https://riak.com/assets/bitcask-intro.pdf
 pub struct Bitcask {
     handle: Handle,
+    notify_shutdown: broadcast::Sender<()>,
 }
 
 /// A handle to the Bitcask instance that allows multiple different threads to safely access it.
 #[derive(Clone, Debug)]
 pub struct Handle {
+    /// The states that are shared across multiple threads.
+    ctx: Arc<Context>,
+
     /// A mutex-protected writer used for appending data entry to the active data files. All
     /// operations that make changes to the active data file are delegated to this object.
     writer: Arc<Mutex<Writer>>,
@@ -67,20 +80,32 @@ pub struct Handle {
 }
 
 /// The context holds states that are shared across both reads and writes operations.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Context {
-    conf: Arc<Config>,
-    path: Arc<path::PathBuf>,
-    min_fileid: Arc<AtomicCell<u64>>,
-    keydir: Arc<DashMap<Bytes, KeyDirEntry>>,
-    stats: Arc<DashMap<u64, LogStatistics>>,
+    /// Storage configurations.
+    conf: Config,
+
+    /// Path to storage directory.
+    path: path::PathBuf,
+
+    /// Whether the storage is shutting down.
+    is_shutdown: AtomicCell<bool>,
+
+    /// The minimum file id allowed to be read.
+    min_fileid: AtomicCell<u64>,
+
+    /// The mapping from keys to the positions of their values on disk.
+    keydir: DashMap<Bytes, KeyDirEntry>,
+
+    /// Counts of different metrics on the storage.
+    stats: DashMap<u64, LogStatistics>,
 }
 
 /// The writer appends log entries to data files and ensures that indices in KeyDir point to a valid
 /// file locations.
 #[derive(Debug)]
 struct Writer {
-    ctx: Context,
+    ctx: Arc<Context>,
     readers: RefCell<LogDir>,
     writer: LogWriter,
     active_fileid: u64,
@@ -92,13 +117,82 @@ struct Writer {
 /// synchronizations between threads.
 #[derive(Debug)]
 struct Reader {
-    ctx: Context,
+    ctx: Arc<Context>,
     readers: RefCell<LogDir>,
 }
 
 impl Bitcask {
+    fn open<P>(path: P, conf: Config) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+    {
+        let (keydir, stats, active_fileid) = rebuild_index(&path)?;
+        debug!(?active_fileid, "got new active file ID");
+
+        // In case the user given 0, we still create a reader
+        let readers = if conf.concurrency > 0 {
+            Arc::new(ArrayQueue::new(conf.concurrency))
+        } else {
+            Arc::new(ArrayQueue::new(conf.concurrency + 1))
+        };
+
+        let ctx = Arc::new(Context {
+            conf,
+            path: path.as_ref().to_path_buf(),
+            is_shutdown: AtomicCell::new(false),
+            min_fileid: AtomicCell::new(0),
+            keydir,
+            stats,
+        });
+
+        for _ in 0..readers.capacity() {
+            readers
+                .push(Reader {
+                    ctx: ctx.clone(),
+                    readers: RefCell::default(),
+                })
+                .expect("unreachable error");
+        }
+
+        let writer = Arc::new(Mutex::new(Writer {
+            ctx: ctx.clone(),
+            readers: RefCell::default(),
+            writer: LogWriter::new(log::create(utils::datafile_name(&path, active_fileid))?)?,
+            active_fileid,
+            written_bytes: 0,
+        }));
+
+        let handle = Handle {
+            ctx,
+            writer,
+            readers,
+        };
+
+        let (notify_shutdown, _) = broadcast::channel(1);
+        let shutdown = Shutdown::new(notify_shutdown.subscribe());
+        {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = merge_on_interval(shutdown, handle).await {
+                    error!(cause=?e, "merge error");
+                }
+            });
+        }
+
+        Ok(Self {
+            handle,
+            notify_shutdown,
+        })
+    }
+
     pub fn get_handle(&self) -> Handle {
         self.handle.clone()
+    }
+}
+
+impl Drop for Bitcask {
+    fn drop(&mut self) {
+        self.handle.ctx.shutdown();
     }
 }
 
@@ -119,47 +213,6 @@ impl KeyValueStorage for Handle {
 }
 
 impl Handle {
-    fn open<P>(path: P, conf: Config) -> Result<Handle, Error>
-    where
-        P: AsRef<Path>,
-    {
-        let (keydir, stats, active_fileid) = rebuild_index(&path)?;
-        debug!(?active_fileid, "got new active file ID");
-
-        let readers = if conf.concurrency > 0 {
-            Arc::new(ArrayQueue::new(conf.concurrency))
-        } else {
-            Arc::new(ArrayQueue::new(conf.concurrency + 1))
-        };
-
-        let ctx = Context {
-            conf: Arc::new(conf),
-            path: Arc::new(path.as_ref().to_path_buf()),
-            min_fileid: Arc::new(AtomicCell::new(0)),
-            keydir: Arc::new(keydir),
-            stats: Arc::new(stats),
-        };
-
-        for _ in 0..readers.capacity() {
-            readers
-                .push(Reader {
-                    ctx: ctx.clone(),
-                    readers: RefCell::default(),
-                })
-                .expect("unreachable error");
-        }
-
-        let writer = Arc::new(Mutex::new(Writer {
-            ctx,
-            readers: RefCell::default(),
-            writer: LogWriter::new(log::create(utils::datafile_name(&path, active_fileid))?)?,
-            active_fileid,
-            written_bytes: 0,
-        }));
-
-        Ok(Handle { writer, readers })
-    }
-
     fn put(&self, key: Bytes, value: Bytes) -> Result<(), Error> {
         self.writer.lock().put(key, value)
     }
@@ -181,6 +234,41 @@ impl Handle {
             // Spin until we have access to a read context
             backoff.spin();
         }
+    }
+}
+
+impl Context {
+    fn can_merge(&self) -> bool {
+        for entry in self.stats.iter() {
+            if entry.dead_bytes > self.conf.merge.triggers.dead_bytes.as_u64()
+                || entry.fragmentation() > self.conf.merge.triggers.fragmentation
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn fileids_to_merge<P>(&self, path: P) -> Result<BTreeSet<u64>, Error>
+    where
+        P: AsRef<Path>,
+    {
+        let mut fileids = BTreeSet::new();
+        for entry in self.stats.iter() {
+            let fileid = *entry.key();
+            let metadata = fs::metadata(datafile_name(&path, fileid))?;
+            if entry.dead_bytes > self.conf.merge.thresholds.dead_bytes.as_u64()
+                && entry.fragmentation() > self.conf.merge.thresholds.fragmentation
+                && metadata.len() > self.conf.merge.thresholds.small_file.as_u64()
+            {
+                fileids.insert(fileid);
+            }
+        }
+        Ok(fileids)
+    }
+
+    fn shutdown(&self) {
+        self.is_shutdown.store(true)
     }
 }
 
@@ -279,9 +367,7 @@ impl Writer {
         let mut merge_fileid = min_merge_fileid;
         debug!(merge_fileid, "new merge file");
 
-        // TODO: periodically check whether we need to merge given the triggers. Once the conditions
-        // given the the triggers are met, we should only merge files that met the conditions given
-        // by the thresholds.
+        let fileids_to_merge = self.ctx.fileids_to_merge(path)?;
 
         // NOTE: we use an explicit scope here to control the lifetimes of `readers`,
         // `merge_datafile_writer` and `merge_hintfile_writer`. We drop the readers
@@ -295,7 +381,12 @@ impl Writer {
                 LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
 
             let mut readers = self.readers.borrow_mut();
-            for mut keydir_entry in self.ctx.keydir.iter_mut() {
+            for mut keydir_entry in self
+                .ctx
+                .keydir
+                .iter_mut()
+                .filter(|e| fileids_to_merge.contains(&e.fileid))
+            {
                 // SAFETY: We ensure in `BitcaskWriter` that all log entries given by
                 // KeyDir are written disk, thus the readers can savely use memmap to
                 // access the data file randomly.
@@ -336,8 +427,8 @@ impl Writer {
         self.ctx.min_fileid.store(min_merge_fileid);
 
         // Remove stale files from system
-        let stale_fileids = utils::sorted_fileids(path)?.filter(|&id| id < min_merge_fileid);
-        for id in stale_fileids {
+        for id in fileids_to_merge {
+            self.ctx.stats.remove(&id);
             if let Err(e) = fs::remove_file(utils::hintfile_name(path, id)) {
                 if e.kind() != io::ErrorKind::NotFound {
                     return Err(e.into());
@@ -351,8 +442,6 @@ impl Writer {
         }
 
         self.new_active_datafile(merge_fileid + 1)?;
-        // TODO: remove the statistics of files that have been merged
-        // self.dead_bytes = 0;
         Ok(())
     }
 
@@ -398,7 +487,30 @@ impl Reader {
     }
 }
 
-#[derive(Debug, Clone)]
+async fn merge_on_interval(mut shutdown: Shutdown, handle: Handle) -> Result<(), Error> {
+    while !shutdown.is_shutdown() {
+        // TODO: We have to check for the merge trigger conditions. If one of the triggers is
+        // sastified then we'll do a merge on files that sastify the threshold conditions.
+        tokio::select! {
+            _ = tokio::time::sleep(handle.ctx.conf.merge.check_inverval) => {},
+            _ = shutdown.recv() => {
+                return Ok(());
+            },
+        };
+
+        if handle.ctx.can_merge() {
+            let handle = handle.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = &handle;
+                handle.writer.lock().merge()
+            })
+            .await??;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
 struct KeyDirEntry {
     fileid: u64,
     len: u64,
@@ -443,6 +555,11 @@ impl LogStatistics {
         self.live_keys -= 1;
         self.dead_keys += 1;
         self.dead_bytes += nbytes;
+    }
+
+    fn fragmentation(&self) -> u8 {
+        let fragmentation = (self.dead_keys * 100) / (self.dead_keys + self.live_keys);
+        fragmentation as u8
     }
 }
 

@@ -83,8 +83,7 @@ impl Config {
     where
         P: AsRef<Path>,
     {
-        let handle = Handle::open(path, self)?;
-        Ok(Bitcask { handle })
+        Bitcask::open(path, self)
     }
 
     /// Set the max number of concurrent readers. Default to the number of logical cores.
