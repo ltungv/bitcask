@@ -4,8 +4,7 @@
 //! Redis serialization protocol (RESP) to communicate with each other. A minimal set of Redis's
 //! commands is supported.
 
-#![deny(rust_2018_idioms)]
-#![deny(rust_2021_compatibility)]
+#![deny(rust_2018_idioms, rust_2021_compatibility)]
 #![warn(missing_docs)]
 
 pub mod net;

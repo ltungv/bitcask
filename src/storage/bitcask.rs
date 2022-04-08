@@ -90,6 +90,7 @@ struct Context {
     path: Arc<path::PathBuf>,
     min_fileid: Arc<AtomicCell<u64>>,
     keydir: Arc<DashMap<Bytes, KeyDirEntry>>,
+    stats: Arc<DashMap<u64, LogStatistics>>,
 }
 
 /// The writer appends log entries to data files and ensures that indices in KeyDir point to a valid
@@ -101,7 +102,6 @@ struct Writer {
     writer: LogWriter,
     active_fileid: u64,
     written_bytes: u64,
-    dead_bytes: u64,
 }
 
 /// The reader reads log entries from data files given the locations found in KeyDir. Since data files
@@ -118,8 +118,8 @@ impl Bitcask {
     where
         P: AsRef<Path>,
     {
-        let (keydir, active_fileid, garbage) = rebuild_index(&path)?;
-        debug!(?active_fileid, "Got new activate file ID");
+        let (keydir, stats, active_fileid) = rebuild_index(&path)?;
+        debug!(?active_fileid, "got new active file ID");
 
         let readers = if conf.concurrency > 0 {
             Arc::new(ArrayQueue::new(conf.concurrency))
@@ -132,6 +132,7 @@ impl Bitcask {
             path: Arc::new(path.as_ref().to_path_buf()),
             min_fileid: Arc::new(AtomicCell::new(0)),
             keydir: Arc::new(keydir),
+            stats: Arc::new(stats),
         };
 
         for _ in 0..readers.capacity() {
@@ -149,7 +150,6 @@ impl Bitcask {
             writer: LogWriter::new(log::create(utils::datafile_name(&path, active_fileid))?)?,
             active_fileid,
             written_bytes: 0,
-            dead_bytes: garbage,
         }));
 
         Ok(Bitcask { writer, readers })
@@ -190,7 +190,10 @@ impl Writer {
         let tstamp = utils::timestamp();
         let keydir_entry = self.write(tstamp, key.clone(), Some(value))?;
         if let Some(prev_keydir_entry) = self.ctx.keydir.insert(key, keydir_entry) {
-            self.collect_dead_bytes(prev_keydir_entry.len)?;
+            let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
+            stats.live_keys -= 1;
+            stats.dead_keys += 1;
+            stats.dead_bytes += prev_keydir_entry.len;
         }
         Ok(())
     }
@@ -204,16 +207,66 @@ impl Writer {
         self.write(utils::timestamp(), key.clone(), None)?;
         match self.ctx.keydir.remove(&key) {
             Some((_, prev_keydir_entry)) => {
-                self.collect_dead_bytes(prev_keydir_entry.len)?;
+                let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
+                stats.live_keys -= 1;
+                stats.dead_keys += 1;
+                stats.dead_bytes += prev_keydir_entry.len;
                 Ok(true)
             }
             None => Ok(false),
         }
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
+    fn write(
+        &mut self,
+        tstamp: u128,
+        key: Bytes,
+        value: Option<Bytes>,
+    ) -> Result<KeyDirEntry, Error> {
+        // Append log entry a create a KeyDir entry for it
+        let datafile_entry = DataFileEntry { tstamp, key, value };
+        let index = self.writer.append(&datafile_entry)?;
+        let keydir_entry = KeyDirEntry {
+            fileid: self.active_fileid,
+            len: index.len,
+            pos: index.pos,
+            tstamp,
+        };
+        self.written_bytes += index.len;
+
+        // Collect statistics of the active data file for the merging process. If we add
+        // a value to a key, we increase the number of live keys. If we add a tombstone,
+        // we increase the number of dead keys.
+        let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
+        if datafile_entry.value.is_some() {
+            stats.live_keys += 1;
+        } else {
+            stats.dead_keys += 1;
+            stats.dead_bytes += keydir_entry.len;
+        }
+        debug!(
+            entry_len = %keydir_entry.len,
+            entry_pos = %keydir_entry.pos,
+            active_fileid = %keydir_entry.fileid,
+            active_file_size = %self.written_bytes,
+            active_live_keys = %stats.live_keys,
+            active_dead_keys = %stats.dead_keys,
+            active_dead_bytes = %stats.dead_bytes,
+            "appended new log entry"
+        );
+        drop(stats); // drop so we no longer borrow self.
+
+        // Check if it exceeds the max limit.
+        if self.written_bytes > self.ctx.conf.max_file_size.as_u64() {
+            self.new_active_datafile(self.active_fileid + 1)?;
+        }
+        Ok(keydir_entry)
+    }
+
     /// Merge data files by copying data from previous data files to the merge data file. Old data
     /// files are deleted after the merge.
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "debug", skip(self))]
     fn merge(&mut self) -> Result<(), Error> {
         let path = self.ctx.path.as_path();
         let min_merge_fileid = self.active_fileid + 1;
@@ -292,34 +345,13 @@ impl Writer {
         }
 
         self.new_active_datafile(merge_fileid + 1)?;
-        self.dead_bytes = 0;
+        // TODO: remove the statistics of files that have been merged
+        // self.dead_bytes = 0;
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, key, value))]
-    fn write(
-        &mut self,
-        tstamp: u128,
-        key: Bytes,
-        value: Option<Bytes>,
-    ) -> Result<KeyDirEntry, Error> {
-        let datafile_entry = DataFileEntry { tstamp, key, value };
-        let index = self.writer.append(&datafile_entry)?;
-        let keydir_entry = KeyDirEntry {
-            fileid: self.active_fileid,
-            len: index.len,
-            pos: index.pos,
-            tstamp,
-        };
-        if datafile_entry.value.is_none() {
-            self.dead_bytes += keydir_entry.len; // tombstones are wasted space
-        }
-        self.collect_written(keydir_entry.len)?;
-        Ok(keydir_entry)
-    }
-
     /// Updates the active file ID and open a new data file with the new active ID.
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "debug", skip(self))]
     fn new_active_datafile(&mut self, fileid: u64) -> Result<(), Error> {
         self.active_fileid = fileid;
         self.writer = LogWriter::new(log::create(utils::datafile_name(
@@ -327,26 +359,6 @@ impl Writer {
             self.active_fileid,
         ))?)?;
         self.written_bytes = 0;
-        Ok(())
-    }
-
-    /// Add the given amount to the number of written bytes and open a new active data file when
-    /// reaches the data file size threshold
-    fn collect_written(&mut self, sz: u64) -> Result<(), Error> {
-        self.written_bytes += sz;
-        if self.written_bytes > self.ctx.conf.max_file_size.as_u64() {
-            self.new_active_datafile(self.active_fileid + 1)?;
-        }
-        Ok(())
-    }
-
-    /// Add the given amount to the number of garbage bytes and perform merge when reaches
-    /// garbage threshold.
-    fn collect_dead_bytes(&mut self, sz: u64) -> Result<(), Error> {
-        self.dead_bytes += sz;
-        if self.dead_bytes > self.ctx.conf.merge.triggers.dead_bytes.as_u64() {
-            self.merge()?;
-        }
         Ok(())
     }
 }
@@ -357,7 +369,7 @@ impl Reader {
     /// # Error
     ///
     /// Errors from I/O operations and serializations/deserializations will be propagated.
-    #[tracing::instrument(skip(self, key))]
+    #[tracing::instrument(level = "debug", skip(self))]
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
         match self.ctx.keydir.get(&key) {
             Some(keydir_entry) => {
@@ -403,18 +415,37 @@ struct DataFileEntry {
     value: Option<Bytes>,
 }
 
-/// Returns a list of sorted filed IDs by parsing the names of data files in the directory
-/// given by `path`.
-fn rebuild_index<P>(path: P) -> Result<(DashMap<Bytes, KeyDirEntry>, u64, u64), Error>
+/// Keeping track of the number of live/dead keys and how much space do the dead keys occupy.
+#[derive(Debug, Default)]
+struct LogStatistics {
+    live_keys: u64,
+    dead_keys: u64,
+    dead_bytes: u64,
+}
+
+/// Read the given directory, rebuild the KeyDir, and gather statistics about the Bitcask instance
+/// at that directory.
+#[allow(clippy::type_complexity)]
+fn rebuild_index<P>(
+    path: P,
+) -> Result<
+    (
+        DashMap<Bytes, KeyDirEntry>,
+        DashMap<u64, LogStatistics>,
+        u64,
+    ),
+    Error,
+>
 where
     P: AsRef<Path>,
 {
     let keydir = DashMap::default();
+    let stats = DashMap::default();
     let fileids = utils::sorted_fileids(&path)?;
 
     let mut active_fileid = None;
-    let mut garbage = 0;
     for fileid in fileids {
+        // Collect the most recently created file id.
         match &mut active_fileid {
             None => active_fileid = Some(fileid),
             Some(id) => {
@@ -424,14 +455,21 @@ where
             }
         }
         match log::open(utils::hintfile_name(&path, fileid)) {
-            Ok(f) => populate_keydir_with_hintfile(&keydir, f, fileid)?,
+            Ok(f) => {
+                // Read the hint file if it exists.
+                stats.insert(fileid, populate_keydir_with_hintfile(&keydir, f, fileid)?);
+            }
             Err(e) => match e.kind() {
                 io::ErrorKind::NotFound => {
-                    garbage += populate_keydir_with_datafile(
-                        &keydir,
-                        log::open(utils::datafile_name(&path, fileid))?,
+                    // Read the data file if the hint file does not exist.
+                    stats.insert(
                         fileid,
-                    )?;
+                        populate_keydir_with_datafile(
+                            &keydir,
+                            log::open(utils::datafile_name(&path, fileid))?,
+                            fileid,
+                        )?,
+                    );
                 }
                 _ => return Err(e.into()),
             },
@@ -439,56 +477,67 @@ where
     }
 
     let active_fileid = active_fileid.map(|id| id + 1).unwrap_or_default();
-    Ok((keydir, active_fileid, garbage))
+    Ok((keydir, stats, active_fileid))
 }
 
 fn populate_keydir_with_hintfile(
     keydir: &DashMap<Bytes, KeyDirEntry>,
     file: fs::File,
     fileid: u64,
-) -> Result<(), Error> {
+) -> Result<LogStatistics, Error> {
+    let mut stats = LogStatistics::default();
     let mut hintfile_iter = LogIterator::new(file)?;
     while let Some((_, entry)) = hintfile_iter.next::<HintFileEntry>()? {
         // Indices given by the hint file do not point to tombstones.
-        keydir.insert(
-            entry.key,
-            KeyDirEntry {
-                fileid,
-                len: entry.len,
-                pos: entry.pos,
-                tstamp: entry.tstamp,
-            },
-        );
+        let keydir_entry = KeyDirEntry {
+            fileid,
+            len: entry.len,
+            pos: entry.pos,
+            tstamp: entry.tstamp,
+        };
+        keydir.insert(entry.key, keydir_entry);
+        // We have a live key after adding a value
+        stats.live_keys += 1;
     }
-    Ok(())
+    Ok(stats)
 }
 
 fn populate_keydir_with_datafile(
     keydir: &DashMap<Bytes, KeyDirEntry>,
     file: fs::File,
     fileid: u64,
-) -> Result<u64, Error> {
-    let mut garbage = 0;
+) -> Result<LogStatistics, Error> {
+    let mut stats = LogStatistics::default();
     let mut datafile_iter = LogIterator::new(file)?;
     while let Some((datafile_index, datafile_entry)) = datafile_iter.next::<DataFileEntry>()? {
         match datafile_entry.value {
-            None => garbage += datafile_index.len,
+            None => {
+                // A tombstone is by definition a dead key
+                stats.dead_keys += 1;
+                stats.dead_bytes += datafile_index.len;
+            }
             Some(_) => {
-                if let Some(prev_keydir_entry) = keydir.insert(
-                    datafile_entry.key,
-                    KeyDirEntry {
-                        fileid,
-                        len: datafile_index.len,
-                        pos: datafile_index.pos,
-                        tstamp: datafile_entry.tstamp,
-                    },
-                ) {
-                    garbage += prev_keydir_entry.len;
+                let keydir_entry = KeyDirEntry {
+                    fileid,
+                    len: datafile_index.len,
+                    pos: datafile_index.pos,
+                    tstamp: datafile_entry.tstamp,
+                };
+                match keydir.insert(datafile_entry.key, keydir_entry) {
+                    None => {
+                        // We have a live key after adding a value
+                        stats.live_keys += 1;
+                    }
+                    Some(prev_keydir_entry) => {
+                        // We have a new dead key after overwriting a value
+                        stats.dead_keys += 1;
+                        stats.dead_bytes += prev_keydir_entry.len;
+                    }
                 }
             }
         }
     }
-    Ok(garbage)
+    Ok(stats)
 }
 
 #[cfg(test)]
@@ -510,5 +559,26 @@ mod tests {
             let value_from_kv = kv.get(Bytes::from(key)).unwrap();
             prop_assert_eq!(Some(Bytes::from(value)), value_from_kv);
         });
+    }
+
+    #[test]
+    fn bitcask_collect_statistics() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = Config::default().concurrency(1).to_owned();
+        let kv = conf.open(dir.path()).unwrap();
+
+        // put 3 different keys
+        kv.put(Bytes::from("key1"), Bytes::from("value1")).unwrap();
+        kv.put(Bytes::from("key2"), Bytes::from("value2")).unwrap();
+        kv.put(Bytes::from("key3"), Bytes::from("value3")).unwrap();
+        // should count 3 live keys
+        assert_eq!(3, kv.writer.lock().ctx.stats.get(&0).unwrap().live_keys);
+
+        // overwrite 2 keys
+        kv.put(Bytes::from("key2"), Bytes::from("value2")).unwrap();
+        kv.put(Bytes::from("key3"), Bytes::from("value3")).unwrap();
+        // should count 3 live keys and 2 dead keys
+        assert_eq!(3, kv.writer.lock().ctx.stats.get(&0).unwrap().live_keys);
+        assert_eq!(2, kv.writer.lock().ctx.stats.get(&0).unwrap().dead_keys);
     }
 }
