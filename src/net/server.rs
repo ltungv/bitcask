@@ -9,8 +9,8 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
-use super::{command::Command, connection::Connection, shutdown::Shutdown};
-use crate::storage::KeyValueStorage;
+use super::{command::Command, connection::Connection};
+use crate::{shutdown::Shutdown, storage::KeyValueStorage};
 
 /// Max number of concurrent connections that can be served by the server.
 const MAX_CONNECTIONS: usize = 128;

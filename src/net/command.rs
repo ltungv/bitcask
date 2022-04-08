@@ -13,8 +13,8 @@ use std::convert::TryFrom;
 use bytes::Bytes;
 use thiserror::Error;
 
-use super::{connection::Connection, frame::Frame, shutdown::Shutdown};
-use crate::storage::KeyValueStorage;
+use super::{connection::Connection, frame::Frame};
+use crate::{shutdown::Shutdown, storage::KeyValueStorage};
 
 /// Error from parsing command from frame
 #[derive(Error, Debug, PartialEq, Eq)]

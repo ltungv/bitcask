@@ -8,7 +8,6 @@ pub mod frame;
 mod client;
 mod error;
 mod server;
-mod shutdown;
 
 pub use client::Client;
 pub use error::Error;

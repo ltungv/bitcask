@@ -10,3 +10,4 @@
 pub mod net;
 pub mod storage;
 pub mod telemetry;
+pub mod shutdown;
