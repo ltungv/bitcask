@@ -23,7 +23,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use self::utils::datafile_name;
 
@@ -119,6 +119,32 @@ struct Writer {
 struct Reader {
     ctx: Arc<Context>,
     readers: RefCell<LogDir>,
+}
+
+async fn merge_on_interval(mut shutdown: Shutdown, handle: Handle) -> Result<(), Error> {
+    while !shutdown.is_shutdown() {
+        tokio::select! {
+            _ = tokio::time::sleep(handle.ctx.conf.merge.check_inverval) => {},
+            _ = shutdown.recv() => {
+                info!("stop merge background task");
+                return Ok(());
+            },
+        };
+
+        if handle.ctx.can_merge() {
+            let handle = handle.clone();
+            let merge_result = tokio::task::spawn_blocking(move || {
+                let _ = &handle;
+                handle.writer.lock().merge()
+            })
+            .await?;
+
+            if let Err(e) = merge_result {
+                error!(cause=?e, "merge error");
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Bitcask {
@@ -243,6 +269,7 @@ impl Context {
             if entry.dead_bytes > self.conf.merge.triggers.dead_bytes.as_u64()
                 || entry.fragmentation() > self.conf.merge.triggers.fragmentation
             {
+                // TODO: check time window
                 return true;
             }
         }
@@ -485,29 +512,6 @@ impl Reader {
             None => Ok(None),
         }
     }
-}
-
-async fn merge_on_interval(mut shutdown: Shutdown, handle: Handle) -> Result<(), Error> {
-    while !shutdown.is_shutdown() {
-        // TODO: We have to check for the merge trigger conditions. If one of the triggers is
-        // sastified then we'll do a merge on files that sastify the threshold conditions.
-        tokio::select! {
-            _ = tokio::time::sleep(handle.ctx.conf.merge.check_inverval) => {},
-            _ = shutdown.recv() => {
-                return Ok(());
-            },
-        };
-
-        if handle.ctx.can_merge() {
-            let handle = handle.clone();
-            tokio::task::spawn_blocking(move || {
-                let _ = &handle;
-                handle.writer.lock().merge()
-            })
-            .await??;
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug)]
