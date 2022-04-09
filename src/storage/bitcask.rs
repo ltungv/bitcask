@@ -186,6 +186,7 @@ impl Bitcask {
             readers,
         };
 
+        // TODO: only spawn task when merge is enabled
         // Spawn the background task that performs the merge operation when needed
         {
             let shutdown = Shutdown::new(notify_shutdown.subscribe());

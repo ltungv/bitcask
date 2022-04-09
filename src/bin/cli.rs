@@ -7,25 +7,25 @@ use opal::{
     telemetry::{get_subscriber, init_subscriber},
 };
 
-/// A minimal Redis client
+/// A minimal Redis client.
 #[derive(Parser)]
 #[clap(name = "opal", version, author, long_about = None)]
 struct Cli {
     #[clap(subcommand)]
     cmd: Commands,
 
-    /// The host address of the server
+    /// The host address of the server.
     #[clap(long, default_value = "127.0.0.1")]
     host: Ipv4Addr,
 
-    /// The port number of the server
+    /// The port number of the server.
     #[clap(long, default_value_t = 6379)]
     port: u16,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Set key's value
+    /// Set key's value.
     Set {
         #[clap(name = "KEY")]
         key: String,
@@ -33,13 +33,13 @@ enum Commands {
         value: String,
     },
 
-    /// Get key's value
+    /// Get key's value.
     Get {
         #[clap(name = "KEY")]
         key: String,
     },
 
-    /// Delete keys
+    /// Delete keys.
     Del {
         #[clap(name = "KEY")]
         keys: Vec<String>,
