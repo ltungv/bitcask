@@ -272,8 +272,8 @@ impl Context {
             let fileid = *entry.key();
             let metadata = fs::metadata(datafile_name(&path, fileid))?;
             if entry.dead_bytes > self.conf.merge.thresholds.dead_bytes.as_u64()
-                && entry.fragmentation() > self.conf.merge.thresholds.fragmentation
-                && metadata.len() > self.conf.merge.thresholds.small_file.as_u64()
+                || entry.fragmentation() > self.conf.merge.thresholds.fragmentation
+                || metadata.len() < self.conf.merge.thresholds.small_file.as_u64()
             {
                 fileids.insert(fileid);
             }
