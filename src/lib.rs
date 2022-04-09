@@ -7,6 +7,7 @@
 #![deny(rust_2018_idioms, rust_2021_compatibility)]
 #![warn(missing_docs)]
 
+pub mod conf;
 pub mod net;
 pub mod shutdown;
 pub mod storage;

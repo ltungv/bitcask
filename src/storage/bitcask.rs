@@ -10,12 +10,13 @@ use std::{
     collections::BTreeSet,
     fs,
     io::{self, BufWriter},
-    path::{self, Path},
+    path::Path,
     sync::Arc,
     time,
 };
 
 use bytes::Bytes;
+use chrono::Timelike;
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::{DashMap, DashSet};
 use parking_lot::Mutex;
@@ -31,7 +32,7 @@ use self::{
     utils::datafile_name,
 };
 use super::KeyValueStorage;
-use crate::shutdown::Shutdown;
+use crate::{shutdown::Shutdown, storage::bitcask::config::MergePolicy};
 
 /// Error returned by Bitcask
 #[derive(Error, Debug)]
@@ -97,9 +98,6 @@ struct Context {
     /// Storage configurations.
     conf: Config,
 
-    /// Path to storage directory.
-    path: path::PathBuf,
-
     /// A set of file IDs that have been merged during the instance lifetime.
     merged: DashSet<u64>,
 
@@ -143,17 +141,13 @@ struct Reader {
 }
 
 impl Bitcask {
-    fn open<P>(path: P, conf: Config) -> Result<Self, Error>
-    where
-        P: AsRef<Path>,
-    {
+    fn open(conf: Config) -> Result<Self, Error> {
         // Reconstruct in-memory data from on-disk data
-        let (keydir, stats, active_fileid) = rebuild_storage(&path)?;
+        let (keydir, stats, active_fileid) = rebuild_storage(&conf.path)?;
         debug!(?active_fileid, "got new active file ID");
 
         let ctx = Arc::new(Context {
             conf,
-            path: path.as_ref().to_path_buf(),
             merged: DashSet::default(),
             keydir,
             stats,
@@ -178,7 +172,10 @@ impl Bitcask {
         let writer = Arc::new(Mutex::new(Writer {
             ctx: ctx.clone(),
             readers: RefCell::default(),
-            writer: LogWriter::new(log::create(utils::datafile_name(&path, active_fileid))?)?,
+            writer: LogWriter::new(log::create(utils::datafile_name(
+                &ctx.conf.path,
+                active_fileid,
+            ))?)?,
             active_fileid,
             written_bytes: 0,
         }));
@@ -194,22 +191,27 @@ impl Bitcask {
         let (notify_shutdown, _) = broadcast::channel(1);
 
         // Spawn merge background task if merge is enable
-        if handle.ctx.conf.merge.enable {
-            let handle = handle.clone();
-            let shutdown = Shutdown::new(notify_shutdown.subscribe());
-            tokio::spawn(async move {
-                if let Err(e) = merge_on_interval(handle, shutdown).await {
-                    error!(cause=?e, "merge error");
-                }
-            });
+        match handle.ctx.conf.merge.policy {
+            MergePolicy::Always | MergePolicy::Window { start: _, end: _ } => {
+                let handle = handle.clone();
+                let shutdown = Shutdown::new(notify_shutdown.subscribe());
+                tokio::spawn(async move {
+                    if let Err(e) = merge_on_interval(handle, shutdown).await {
+                        error!(cause=?e, "merge error");
+                    }
+                });
+            }
+            _ => {}
         }
 
         // Spawn sync background task if sync is enable
-        if let SyncStrategy::Interval(d) = handle.ctx.conf.sync {
+        if let SyncStrategy::IntervalMs(d) = handle.ctx.conf.sync {
             let handle = handle.clone();
             let shutdown = Shutdown::new(notify_shutdown.subscribe());
             tokio::spawn(async move {
-                if let Err(e) = sync_on_interval(d, handle, shutdown).await {
+                if let Err(e) =
+                    sync_on_interval(time::Duration::from_millis(d), handle, shutdown).await
+                {
                     error!(cause=?e, "sync error");
                 }
             });
@@ -272,13 +274,16 @@ impl Context {
     /// Return `true` if one of the merge trigger conditions is met.
     fn can_merge(&self) -> bool {
         // Only merge when the current time is in the specified time window
-        let now = chrono::Local::now().time();
-        if !self.conf.merge.window.contains(&now) {
-            return false;
+        if let MergePolicy::Window { start, end } = self.conf.merge.policy {
+            let now = chrono::Local::now().time();
+            let hour = now.hour();
+            if hour < start || hour > end {
+                return false;
+            }
         }
         for entry in self.stats.iter() {
             // If any file met one of the trigger conditions, we'll try to merge
-            if entry.dead_bytes > self.conf.merge.triggers.dead_bytes.as_u64()
+            if entry.dead_bytes > self.conf.merge.triggers.dead_bytes
                 || entry.fragmentation() > self.conf.merge.triggers.fragmentation
             {
                 return true;
@@ -297,9 +302,9 @@ impl Context {
             let fileid = *entry.key();
             let metadata = fs::metadata(datafile_name(&path, fileid))?;
             // Files that met one of the threshold conditions are included
-            if entry.dead_bytes > self.conf.merge.thresholds.dead_bytes.as_u64()
+            if entry.dead_bytes > self.conf.merge.thresholds.dead_bytes
                 || entry.fragmentation() > self.conf.merge.thresholds.fragmentation
-                || metadata.len() < self.conf.merge.thresholds.small_file.as_u64()
+                || metadata.len() < self.conf.merge.thresholds.small_file
             {
                 fileids.insert(fileid);
             }
@@ -399,7 +404,7 @@ impl Writer {
 
         // Check if active file size exceeds the max limit. This must be done as the last step of
         // the writing process, otherwise we risk corrupting the storage states.
-        if self.written_bytes > self.ctx.conf.max_file_size.as_u64() {
+        if self.written_bytes > self.ctx.conf.max_file_size {
             self.new_active_datafile(self.active_fileid + 1)?;
         }
         Ok(keydir_entry)
@@ -408,7 +413,7 @@ impl Writer {
     /// Copy data from files that are included for merging. Once finish, copied files are deleted.
     #[tracing::instrument(level = "debug", skip(self))]
     fn merge(&mut self) -> Result<(), Error> {
-        let path = self.ctx.path.as_path();
+        let path = self.ctx.conf.path.as_path();
         let min_merge_fileid = self.active_fileid + 1;
         let mut merge_fileid = min_merge_fileid;
         debug!(merge_fileid, "new merge file");
@@ -465,7 +470,7 @@ impl Writer {
 
                 // switch to new merge data file if we exceed the max file size
                 merge_pos += nbytes;
-                if merge_pos > self.ctx.conf.max_file_size.as_u64() {
+                if merge_pos > self.ctx.conf.max_file_size {
                     merge_fileid += 1;
                     merge_pos = 0;
                     merge_datafile_writer =
@@ -506,7 +511,7 @@ impl Writer {
     fn new_active_datafile(&mut self, fileid: u64) -> Result<(), Error> {
         self.active_fileid = fileid;
         self.writer = LogWriter::new(log::create(utils::datafile_name(
-            self.ctx.path.as_path(),
+            self.ctx.conf.path.as_path(),
             self.active_fileid,
         ))?)?;
         self.written_bytes = 0;
@@ -539,7 +544,7 @@ impl Reader {
                 // mapped to an invalid segment.
                 let datafile_entry = unsafe {
                     readers
-                        .get(self.ctx.path.as_path(), keydir_entry.fileid)?
+                        .get(self.ctx.conf.path.as_path(), keydir_entry.fileid)?
                         .at::<DataFileEntry>(keydir_entry.len, keydir_entry.pos)?
                 };
 
@@ -553,7 +558,7 @@ impl Reader {
 /// A periodic background task that checks the merge triggers and performs merging when the trigger
 /// conditions are met.
 async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
-    let check_inverval = handle.ctx.conf.merge.check_inverval;
+    let check_inverval = time::Duration::from_millis(handle.ctx.conf.merge.check_interval_ms);
     let jitter_amount = check_inverval.mul_f64(handle.ctx.conf.merge.check_jitter);
     let dist = rand::distributions::Uniform::new_inclusive(
         check_inverval - jitter_amount,
@@ -790,7 +795,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use bytesize::ByteSize;
     use proptest::{collection, prelude::*};
 
     use super::*;
@@ -798,8 +802,8 @@ mod tests {
     #[tokio::test]
     async fn bitcask_sequential_read_after_write_should_return_the_written_data() {
         let dir = tempfile::tempdir().unwrap();
-        let conf = Config::default().concurrency(1).to_owned();
-        let kv = conf.open(dir.path()).unwrap();
+        let conf = Config::default().concurrency(1).path(dir.path()).to_owned();
+        let kv = conf.open().unwrap();
         let handle = kv.get_handle();
 
         proptest!(|(key in collection::vec(any::<u8>(), 0..64),
@@ -816,10 +820,11 @@ mod tests {
         // create lots of small files to test reading across different files
         let conf = Config::default()
             .concurrency(1)
-            .max_file_size(ByteSize::kib(64))
+            .max_file_size(64 * 1024)
+            .path(dir.path())
             .to_owned();
         {
-            let kv = conf.clone().open(dir.path()).unwrap();
+            let kv = conf.clone().open().unwrap();
             let handle = kv.get_handle();
             // put 10000 different keys
             for i in 0..10000 {
@@ -833,7 +838,7 @@ mod tests {
         }
 
         // rebuild bitcask
-        let kv = conf.open(dir.path()).unwrap();
+        let kv = conf.open().unwrap();
         let handle = kv.get_handle();
         // get 10000 different keys
         for i in 0..10000 {
@@ -851,11 +856,12 @@ mod tests {
         // create lots of small files to test reading across different files
         let conf = Config::default()
             .concurrency(1)
-            .max_file_size(ByteSize::kib(64))
+            .max_file_size(64 * 1024)
+            .path(dir.path())
             .to_owned();
 
         {
-            let kv = conf.clone().open(dir.path()).unwrap();
+            let kv = conf.clone().open().unwrap();
             let handle = kv.get_handle();
             // put 10000 different keys
             for i in 0..10000 {
@@ -878,7 +884,7 @@ mod tests {
         }
 
         // rebuild bitcask
-        let kv = conf.open(dir.path()).unwrap();
+        let kv = conf.open().unwrap();
         let handle = kv.get_handle();
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
@@ -897,9 +903,10 @@ mod tests {
         // create lots of small files to test reading across different files
         let conf = Config::default()
             .concurrency(1)
-            .max_file_size(ByteSize::kib(64))
+            .max_file_size(64 * 1024)
+            .path(dir.path())
             .to_owned();
-        let kv = conf.open(dir.path()).unwrap();
+        let kv = conf.open().unwrap();
         let handle = kv.get_handle();
         // put 10000 different keys
         for i in 0..10000 {
