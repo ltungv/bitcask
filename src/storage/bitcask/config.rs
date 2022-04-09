@@ -35,20 +35,20 @@ pub struct MergeStrategy {
     pub triggers: MergeTriggers,
     pub thresholds: MergeThresholds,
     pub check_inverval: time::Duration,
-    pub check_jitter: u8,
+    pub check_jitter: f64,
 }
 
 /// List of conditions that trigger the data files merging process
 #[derive(Debug, Clone)]
 pub struct MergeTriggers {
-    pub fragmentation: u8,
+    pub fragmentation: f64,
     pub dead_bytes: ByteSize,
 }
 
 /// List of conditions that trigger the data files merging process
 #[derive(Debug, Clone)]
 pub struct MergeThresholds {
-    pub fragmentation: u8,
+    pub fragmentation: f64,
     pub dead_bytes: ByteSize,
     pub small_file: ByteSize,
 }
@@ -63,13 +63,13 @@ impl Default for Config {
                 enable: true,
                 window: (NaiveTime::from_hms(0, 0, 0)..NaiveTime::from_hms(23, 59, 59)),
                 check_inverval: time::Duration::from_secs(180),
-                check_jitter: 30,
+                check_jitter: 0.3,
                 triggers: MergeTriggers {
-                    fragmentation: 60,
+                    fragmentation: 0.6,
                     dead_bytes: ByteSize::mib(512),
                 },
                 thresholds: MergeThresholds {
-                    fragmentation: 40,
+                    fragmentation: 0.4,
                     dead_bytes: ByteSize::mib(128),
                     small_file: ByteSize::mib(10),
                 },
@@ -112,28 +112,39 @@ impl Config {
     }
 
     /// Set the merge policy to only merge during the given time window.
+    /// Default to [00h00m00s .. 23h59m59s]
     pub fn merge_window(&mut self, window: Range<chrono::NaiveTime>) -> &mut Self {
         self.merge.window = window;
         self
     }
 
-    /// Set the integer percentage of dead keys to total keys that will trigger a merge.
-    /// Default to `60`.
-    pub fn merge_trigger_fragmentation(&mut self, fragmentation: u8) -> &mut Self {
+    /// Set the fraction of dead keys to total keys that will trigger a merge (min 0.0, max 1.0).
+    /// Default to `0.6`.
+    ///
+    /// # Panics
+    ///
+    /// If the given fraction is in in [0, 1] then panics
+    pub fn merge_trigger_fragmentation(&mut self, fragmentation: f64) -> &mut Self {
+        assert!((0.0..=1.0).contains(&fragmentation));
         self.merge.triggers.fragmentation = fragmentation;
         self
     }
 
     /// Set the minimum amount of bytes occupied by dead keys that will trigger a merge.
-    /// Default to `60`.
+    /// Default to `512MiBs`.
     pub fn merge_trigger_dead_bytes(&mut self, dead_bytes: ByteSize) -> &mut Self {
         self.merge.triggers.dead_bytes = dead_bytes;
         self
     }
 
-    /// Set the integer percentage of dead keys to total keys that will cause a data file to be
-    /// included during a merge. Default to `40`.
-    pub fn merge_threshold_fragmentation(&mut self, fragmentation: u8) -> &mut Self {
+    /// Set the fraction of dead keys to total keys that will cause a data file to be
+    /// included during a merge (min 0.0, max 1.0). Default to `0.4`.
+    ///
+    /// # Panics
+    ///
+    /// If the given fraction is in in [0, 1] then panics
+    pub fn merge_threshold_fragmentation(&mut self, fragmentation: f64) -> &mut Self {
+        assert!((0.0..=1.0).contains(&fragmentation));
         self.merge.thresholds.fragmentation = fragmentation;
         self
     }
@@ -159,9 +170,14 @@ impl Config {
         self
     }
 
-    /// Set the integer percentage of the random variation applied to the merge interval.
-    /// Default `30`.
-    pub fn merge_check_jitter(&mut self, check_jitter: u8) -> &mut Self {
+    /// Set the fraction of the random variation applied to the merge interval (min 0.0, max 1.0)
+    /// Default `0.3`.
+    ///
+    /// # Panics
+    ///
+    /// If the given fraction is in in [0, 1] then panics
+    pub fn merge_check_jitter(&mut self, check_jitter: f64) -> &mut Self {
+        assert!((0.0..=1.0).contains(&check_jitter));
         self.merge.check_jitter = check_jitter;
         self
     }

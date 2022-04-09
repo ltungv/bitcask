@@ -18,6 +18,7 @@ use bytes::Bytes;
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use dashmap::{DashMap, DashSet};
 use parking_lot::Mutex;
+use rand::prelude::Distribution;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -535,12 +536,17 @@ impl Reader {
 /// A periodic background task that checks the merge triggers and performs merging when the trigger
 /// conditions are met.
 async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
+    let check_inverval = handle.ctx.conf.merge.check_inverval;
+    let jitter_amount = check_inverval.mul_f64(handle.ctx.conf.merge.check_jitter);
+    let dist = rand::distributions::Uniform::new_inclusive(
+        check_inverval - jitter_amount,
+        check_inverval + jitter_amount,
+    );
+
     while !shutdown.is_shutdown() {
         // Wake up the task when a specific interval has passed or when the storage is shutdown.
         tokio::select! {
-            // TODO: A jitter when sleeping to help avoid the situations when distributed
-            // nodes are all merging at the same time (currently we don't need this feature).
-            _ = tokio::time::sleep(handle.ctx.conf.merge.check_inverval) => {},
+            _ = tokio::time::sleep(dist.sample(&mut rand::thread_rng())) => {},
             _ = shutdown.recv() => {
                 debug!("stopping merge background task");
                 return Ok(());
@@ -613,13 +619,15 @@ impl LogStatistics {
     }
 
     /// Calculate the integer percentage of dead keys to total keys
-    fn fragmentation(&self) -> u8 {
+    fn fragmentation(&self) -> f64 {
         // We avoid performing the calculation when there's no dead keys. This also helps avoiding
         // a division by zero
         if self.dead_keys == 0 {
-            0
+            0.0
         } else {
-            ((self.dead_keys * 100) / (self.dead_keys + self.live_keys)) as u8
+            let dead_keys = self.dead_keys as f64;
+            let live_keys = self.live_keys as f64;
+            dead_keys / (dead_keys + live_keys)
         }
     }
 }
