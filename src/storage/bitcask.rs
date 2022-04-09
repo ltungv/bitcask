@@ -187,32 +187,10 @@ impl Bitcask {
         // We'll tie the lifetime of this channel to the lifetime of our `Bitcask` struct so it's
         // closed when the struct is dropped
         let (notify_shutdown, _) = broadcast::channel(1);
-
-        // Spawn merge background task if merge is enable
-        match handle.ctx.conf.merge.policy {
-            MergePolicy::Always | MergePolicy::Window { start: _, end: _ } => {
-                let handle = handle.clone();
-                let shutdown = Shutdown::new(notify_shutdown.subscribe());
-                tokio::spawn(async move {
-                    if let Err(e) = merge_on_interval(handle, shutdown).await {
-                        error!(cause=?e, "merge error");
-                    }
-                });
-            }
-            _ => {}
-        }
-
-        // Spawn sync background task if sync is enable
-        if let SyncStrategy::IntervalMs(d) = handle.ctx.conf.sync {
+        {
             let handle = handle.clone();
-            let shutdown = Shutdown::new(notify_shutdown.subscribe());
-            tokio::spawn(async move {
-                if let Err(e) =
-                    sync_on_interval(time::Duration::from_millis(d), handle, shutdown).await
-                {
-                    error!(cause=?e, "sync error");
-                }
-            });
+            let notify_shutdown = notify_shutdown.clone();
+            std::thread::spawn(move || background_tasks(handle, notify_shutdown));
         }
 
         Ok(Self {
@@ -553,6 +531,41 @@ impl Reader {
     }
 }
 
+fn background_tasks(handle: Handle, notify_shutdown: broadcast::Sender<()>) -> Result<(), Error> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    // Spawn merge background task if merge is enable
+    match handle.ctx.conf.merge.policy {
+        MergePolicy::Always | MergePolicy::Window { start: _, end: _ } => {
+            let handle = handle.clone();
+            let shutdown = Shutdown::new(notify_shutdown.subscribe());
+            rt.spawn(async move {
+                if let Err(e) = merge_on_interval(handle, shutdown).await {
+                    error!(cause=?e, "merge error");
+                }
+            });
+        }
+        _ => {}
+    }
+
+    // Spawn sync background task if sync is enable
+    if let SyncStrategy::IntervalMs(d) = handle.ctx.conf.sync {
+        let handle = handle.clone();
+        let shutdown = Shutdown::new(notify_shutdown.subscribe());
+        rt.spawn(async move {
+            if let Err(e) = sync_on_interval(time::Duration::from_millis(d), handle, shutdown).await
+            {
+                error!(cause=?e, "sync error");
+            }
+        });
+    }
+
+    drop(notify_shutdown);
+    Ok(())
+}
+
 /// A periodic background task that checks the merge triggers and performs merging when the trigger
 /// conditions are met.
 #[tracing::instrument(skip(handle, shutdown))]
@@ -798,8 +811,8 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn bitcask_sequential_read_after_write_should_return_the_written_data() {
+    #[test]
+    fn bitcask_sequential_read_after_write_should_return_the_written_data() {
         let dir = tempfile::tempdir().unwrap();
         let conf = Config::default().concurrency(1).path(dir.path()).to_owned();
         let kv = conf.open().unwrap();
@@ -813,8 +826,8 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn bitcask_rebuilt_keydir_correctly() {
+    #[test]
+    fn bitcask_rebuilt_keydir_correctly() {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
@@ -849,8 +862,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn bitcask_rebuilt_stats_correctly() {
+    #[test]
+    fn bitcask_rebuilt_stats_correctly() {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
@@ -896,8 +909,8 @@ mod tests {
         assert_eq!(5000, deads);
     }
 
-    #[tokio::test]
-    async fn bitcask_collect_statistics() {
+    #[test]
+    fn bitcask_collect_statistics() {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
