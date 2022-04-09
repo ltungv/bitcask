@@ -545,9 +545,8 @@ impl Reader {
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
         match self.ctx.keydir.get(&key) {
             Some(keydir_entry) => {
-                let merged: Vec<u64> = self.ctx.merged.iter().map(|id| *id).collect();
                 let mut readers = self.readers.borrow_mut();
-                readers.drop(merged);
+                readers.drop(self.ctx.merged.iter().map(|id| *id));
 
                 // SAFETY: We have taken `keydir_entry` from KeyDir which is ensured to point to
                 // valid data file positions. Thus we can be confident that the Mmap won't be
