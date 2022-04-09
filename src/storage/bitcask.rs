@@ -5,10 +5,6 @@ mod config;
 mod log;
 mod utils;
 
-use tokio::sync::broadcast;
-
-pub use self::config::Config;
-
 use std::{
     cell::RefCell,
     collections::BTreeSet,
@@ -24,8 +20,10 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::broadcast;
 use tracing::{debug, error};
 
+pub use self::config::{Config, SyncStrategy};
 use self::{
     log::{LogDir, LogIterator, LogWriter},
     utils::datafile_name,
@@ -36,9 +34,11 @@ use crate::shutdown::Shutdown;
 /// Error returned by Bitcask
 #[derive(Error, Debug)]
 pub enum Error {
+    /// Error from I/O operations.
     #[error("I/O error - {0}")]
     Io(#[from] io::Error),
 
+    /// Error from serialization and deserialization.
     #[error("Serialization error - {0}")]
     Serialization(#[from] bincode::Error),
 
@@ -57,11 +57,18 @@ pub enum Error {
 ///
 /// Operations on the Bitcask instance are not directly handled by this struct. Instead, it gives
 /// out handles to the Bitcask instance to the threads that need it, and operations on the instance
-/// are concurrently executed through these handles.
+/// are concurrently executed through these handles. When this struct is dropped, it sets the
+/// shutdown state of the storage and notifies all background tasks about the change so they can
+/// gracefully stop.
 ///
 /// [bitcask-intro.pdf]: https://riak.com/assets/bitcask-intro.pdf
 pub struct Bitcask {
+    /// Handle to the storage that can be shared across threads that want to access the storage.
     handle: Handle,
+
+    /// A channel for broadcasting shutdown signal so background tasks can gracefully stop. Tasks
+    /// that want to check if the storage has been shutted down subscribe to this channel and wait
+    /// for the signal that is sent when the channel is closed after this struct is dropped.
     notify_shutdown: broadcast::Sender<()>,
 }
 
@@ -90,9 +97,6 @@ struct Context {
     /// Path to storage directory.
     path: path::PathBuf,
 
-    /// Whether the storage is shutting down.
-    is_shutdown: AtomicCell<bool>,
-
     /// The minimum file id allowed to be read.
     min_fileid: AtomicCell<u64>,
 
@@ -107,10 +111,19 @@ struct Context {
 /// file locations.
 #[derive(Debug)]
 struct Writer {
+    /// The shared states.
     ctx: Arc<Context>,
+
+    /// The thread-local cache of file descriptors for reading the data files.
     readers: RefCell<LogDir>,
+
+    /// A writer that appends entries to the currently active file.
     writer: LogWriter,
+
+    /// The ID of the currently active file.
     active_fileid: u64,
+
+    /// The number of bytes that have been written to the currently active file.
     written_bytes: u64,
 }
 
@@ -119,7 +132,10 @@ struct Writer {
 /// synchronizations between threads.
 #[derive(Debug)]
 struct Reader {
+    /// The shared states.
     ctx: Arc<Context>,
+
+    /// The thread-local cache of file descriptors for reading the data files.
     readers: RefCell<LogDir>,
 }
 
@@ -141,7 +157,6 @@ impl Bitcask {
         let ctx = Arc::new(Context {
             conf,
             path: path.as_ref().to_path_buf(),
-            is_shutdown: AtomicCell::new(false),
             min_fileid: AtomicCell::new(0),
             keydir,
             stats,
@@ -164,15 +179,16 @@ impl Bitcask {
             written_bytes: 0,
         }));
 
+        let (notify_shutdown, _) = broadcast::channel(1);
         let handle = Handle {
             ctx,
             writer,
             readers,
         };
 
-        let (notify_shutdown, _) = broadcast::channel(1);
-        let shutdown = Shutdown::new(notify_shutdown.subscribe());
+        // Spawn the background task that performs the merge operation when needed
         {
+            let shutdown = Shutdown::new(notify_shutdown.subscribe());
             let handle = handle.clone();
             tokio::spawn(async move {
                 if let Err(e) = merge_on_interval(shutdown, handle).await {
@@ -189,12 +205,6 @@ impl Bitcask {
 
     pub fn get_handle(&self) -> Handle {
         self.handle.clone()
-    }
-}
-
-impl Drop for Bitcask {
-    fn drop(&mut self) {
-        self.handle.ctx.shutdown();
     }
 }
 
@@ -268,10 +278,6 @@ impl Context {
             }
         }
         Ok(fileids)
-    }
-
-    fn shutdown(&self) {
-        self.is_shutdown.store(true)
     }
 }
 

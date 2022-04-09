@@ -110,7 +110,7 @@ impl Config {
         self
     }
 
-    /// Set the merge policy to only merge during the given time window..
+    /// Set the merge policy to only merge during the given time window.
     pub fn merge_window(&mut self, window: Range<u8>) -> &mut Self {
         assert!((0..24).contains(&window.start));
         assert!((0..24).contains(&window.end));
@@ -167,3 +167,4 @@ impl Config {
         self
     }
 }
+

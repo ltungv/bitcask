@@ -8,6 +8,6 @@
 #![warn(missing_docs)]
 
 pub mod net;
+pub mod shutdown;
 pub mod storage;
 pub mod telemetry;
-pub mod shutdown;

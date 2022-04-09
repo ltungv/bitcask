@@ -4,13 +4,12 @@ mod del;
 mod get;
 mod set;
 
-pub use self::{del::Del, get::Get, set::Set};
-
 use std::convert::TryFrom;
 
 use bytes::Bytes;
 use thiserror::Error;
 
+pub use self::{del::Del, get::Get, set::Set};
 use super::{connection::Connection, frame::Frame};
 use crate::{shutdown::Shutdown, storage::KeyValueStorage};
 
