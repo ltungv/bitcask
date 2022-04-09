@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    concurrent_read_bulk_bench_iter, concurrent_write_bulk_bench_iter, get_bitcask, get_dashmap,
-    get_sled, get_threadpool, rand_kv_pairs, sequential_read_bulk_bench_iter,
+    concurrent_read_bulk_bench_iter, concurrent_write_bulk_bench_iter, get_bitcask, get_sled,
+    get_threadpool, rand_kv_pairs, sequential_read_bulk_bench_iter,
     sequential_write_bulk_bench_iter, EngineType, KeyValuePair,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion, Throughput};
@@ -34,11 +34,6 @@ pub fn bench_write(c: &mut Criterion) {
         &(&kv_pairs, EngineType::Sled),
         concurrent_write_bulk_bench,
     );
-    g.bench_with_input(
-        "dashmap",
-        &(&kv_pairs, EngineType::DashMap),
-        concurrent_write_bulk_bench,
-    );
     g.finish();
 
     let mut g = c.benchmark_group("compare_engines/sequential_write");
@@ -54,11 +49,6 @@ pub fn bench_write(c: &mut Criterion) {
         &(&kv_pairs, EngineType::Sled),
         sequential_write_bulk_bench,
     );
-    g.bench_with_input(
-        "dashmap",
-        &(&kv_pairs, EngineType::DashMap),
-        sequential_write_bulk_bench,
-    );
     g.finish();
 }
 
@@ -69,12 +59,10 @@ fn concurrent_write_bulk_bench(
     let pool = get_threadpool(num_cpus::get_physical());
     match *engine {
         EngineType::Bitcask => {
+            let (engine, _tmpdir) = get_bitcask();
             pool.install(|| {
                 b.iter_batched(
-                    || {
-                        let (engine, tmpdir) = get_bitcask();
-                        (engine, kv_pairs.to_vec(), tmpdir)
-                    },
+                    || (engine.get_handle(), kv_pairs.to_vec()),
                     concurrent_write_bulk_bench_iter,
                     BatchSize::SmallInput,
                 )
@@ -84,20 +72,8 @@ fn concurrent_write_bulk_bench(
             pool.install(|| {
                 b.iter_batched(
                     || {
-                        let (engine, tmpdir) = get_sled();
-                        (engine, kv_pairs.to_vec(), tmpdir)
-                    },
-                    concurrent_write_bulk_bench_iter,
-                    BatchSize::SmallInput,
-                )
-            });
-        }
-        EngineType::DashMap => {
-            pool.install(|| {
-                b.iter_batched(
-                    || {
-                        let (engine, tmpdir) = get_dashmap();
-                        (engine, kv_pairs.to_vec(), tmpdir)
+                        let (engine, _tmpdir) = get_sled();
+                        (engine, kv_pairs.to_vec())
                     },
                     concurrent_write_bulk_bench_iter,
                     BatchSize::SmallInput,
@@ -113,31 +89,17 @@ fn sequential_write_bulk_bench(
 ) {
     match *engine {
         EngineType::Bitcask => {
+            let (engine, _tmpdir) = get_bitcask();
             b.iter_batched(
-                || {
-                    let (engine, tmpdir) = get_bitcask();
-                    (engine, kv_pairs.to_vec(), tmpdir)
-                },
+                || (engine.get_handle(), kv_pairs.to_vec()),
                 sequential_write_bulk_bench_iter,
                 BatchSize::SmallInput,
             );
         }
         EngineType::Sled => {
+            let (engine, _tmpdir) = get_sled();
             b.iter_batched(
-                || {
-                    let (engine, tmpdir) = get_sled();
-                    (engine, kv_pairs.to_vec(), tmpdir)
-                },
-                sequential_write_bulk_bench_iter,
-                BatchSize::SmallInput,
-            );
-        }
-        EngineType::DashMap => {
-            b.iter_batched(
-                || {
-                    let (engine, tmpdir) = get_dashmap();
-                    (engine, kv_pairs.to_vec(), tmpdir)
-                },
+                || (engine.clone(), kv_pairs.to_vec()),
                 sequential_write_bulk_bench_iter,
                 BatchSize::SmallInput,
             );
@@ -165,11 +127,6 @@ pub fn bench_read(c: &mut Criterion) {
         &(&kv_pairs, EngineType::Sled),
         concurrent_read_bulk_bench,
     );
-    g.bench_with_input(
-        "dashmap",
-        &(&kv_pairs, EngineType::DashMap),
-        concurrent_read_bulk_bench,
-    );
     g.finish();
 
     let mut g = c.benchmark_group("compare_engines/sequential_read");
@@ -177,15 +134,15 @@ pub fn bench_read(c: &mut Criterion) {
 
     {
         let (engine, _tmpdir) = get_bitcask();
-        g.bench_with_input("bitcask", &(&kv_pairs, engine), sequential_read_bulk_bench);
+        g.bench_with_input(
+            "bitcask",
+            &(&kv_pairs, engine.get_handle()),
+            sequential_read_bulk_bench,
+        );
     }
     {
         let (engine, _tmpdir) = get_sled();
         g.bench_with_input("sled", &(&kv_pairs, engine), sequential_read_bulk_bench);
-    }
-    {
-        let (engine, _tmpdir) = get_dashmap();
-        g.bench_with_input("dashmap", &(&kv_pairs, engine), sequential_read_bulk_bench);
     }
     g.finish();
 }
@@ -199,15 +156,16 @@ fn concurrent_read_bulk_bench(
     match *engine {
         EngineType::Bitcask => {
             let (engine, _tmpdir) = get_bitcask();
+            let handle = engine.get_handle();
             kv_pairs.iter().for_each(|(k, v)| {
-                engine.set(k.clone(), v.clone()).unwrap();
+                handle.set(k.clone(), v.clone()).unwrap();
             });
             pool.install(move || {
                 b.iter_batched(
                     || {
                         let mut kv_pairs = kv_pairs.to_vec();
                         kv_pairs.shuffle(&mut rng);
-                        (engine.clone(), kv_pairs)
+                        (engine.get_handle(), kv_pairs)
                     },
                     concurrent_read_bulk_bench_iter,
                     BatchSize::SmallInput,
@@ -216,23 +174,6 @@ fn concurrent_read_bulk_bench(
         }
         EngineType::Sled => {
             let (engine, _tmpdir) = get_sled();
-            kv_pairs.iter().cloned().for_each(|(k, v)| {
-                engine.set(k, v).unwrap();
-            });
-            pool.install(move || {
-                b.iter_batched(
-                    || {
-                        let mut kv_pairs = kv_pairs.to_vec();
-                        kv_pairs.shuffle(&mut rng);
-                        (engine.clone(), kv_pairs)
-                    },
-                    concurrent_read_bulk_bench_iter,
-                    BatchSize::SmallInput,
-                )
-            });
-        }
-        EngineType::DashMap => {
-            let (engine, _tmpdir) = get_dashmap();
             kv_pairs.iter().cloned().for_each(|(k, v)| {
                 engine.set(k, v).unwrap();
             });

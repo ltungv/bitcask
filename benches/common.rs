@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use criterion::black_box;
-use opal::storage::{
-    BitcaskKeyValueStorage, Config, DashMapKeyValueStorage, KeyValueStorage, SledKeyValueStorage,
-};
+use sled::IVec;
+
+use opal::storage::{bitcask, KeyValueStorage};
 use rand::{
     distributions::{Standard, Uniform},
     prelude::*,
@@ -19,12 +19,10 @@ pub type KeyValuePair = (Bytes, Bytes);
 pub enum EngineType {
     Bitcask,
     Sled,
-    DashMap,
 }
 
-pub fn concurrent_write_bulk_bench_iter<E>(
-    (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
-) where
+pub fn concurrent_write_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
+where
     E: KeyValueStorage,
 {
     concurrent_write_bulk_bench_iter_no_tempdir((engine, kv_pairs));
@@ -52,15 +50,7 @@ where
         });
 }
 
-pub fn sequential_write_bulk_bench_iter<E>(
-    (engine, kv_pairs, _tmpdir): (E, Vec<KeyValuePair>, TempDir),
-) where
-    E: KeyValueStorage,
-{
-    sequential_write_bulk_bench_iter_no_tempdir((engine, kv_pairs))
-}
-
-pub fn sequential_write_bulk_bench_iter_no_tempdir<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
+pub fn sequential_write_bulk_bench_iter<E>((engine, kv_pairs): (E, Vec<KeyValuePair>))
 where
     E: KeyValueStorage,
 {
@@ -78,23 +68,49 @@ where
     });
 }
 
-pub fn get_bitcask() -> (BitcaskKeyValueStorage, TempDir) {
+/// A key-value store that uses sled as the underlying data storage engine
+#[derive(Debug, Clone)]
+pub struct SledKeyValueStorage {
+    db: sled::Db,
+}
+
+impl SledKeyValueStorage {
+    /// Creates a new proxy that forwards method calls to the underlying key-value store
+    pub fn new(db: sled::Db) -> Self {
+        Self { db }
+    }
+}
+
+impl KeyValueStorage for SledKeyValueStorage {
+    type Error = sled::Error;
+
+    fn del(&self, key: Bytes) -> Result<bool, Self::Error> {
+        self.db.remove(key).map(|v| v.is_some())
+    }
+
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.db
+            .get(key)
+            .map(|v| v.map(|v| Bytes::copy_from_slice(v.as_ref())))
+    }
+
+    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error> {
+        self.db
+            .insert(IVec::from(key.as_ref()), IVec::from(value.as_ref()))?;
+        Ok(())
+    }
+}
+
+pub fn get_bitcask() -> (bitcask::Bitcask, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let bitcask = Config::default().open(tmpdir.path()).unwrap();
-    let engine = BitcaskKeyValueStorage::from(bitcask);
-    (engine, tmpdir)
+    let bitcask = bitcask::Config::default().open(tmpdir.path()).unwrap();
+    (bitcask, tmpdir)
 }
 
 pub fn get_sled() -> (SledKeyValueStorage, TempDir) {
     let tmpdir = TempDir::new().unwrap();
     let db = sled::Config::default().path(tmpdir.path()).open().unwrap();
     let engine = SledKeyValueStorage::new(db);
-    (engine, tmpdir)
-}
-
-pub fn get_dashmap() -> (DashMapKeyValueStorage, TempDir) {
-    let tmpdir = TempDir::new().unwrap();
-    let engine = DashMapKeyValueStorage::default();
     (engine, tmpdir)
 }
 

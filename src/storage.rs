@@ -1,12 +1,8 @@
 //! Define the interface for a storage engine and different implementations of that interface.
 
 pub mod bitcask;
-mod dashmapkv;
-mod sledkv;
 
 use bytes::Bytes;
-
-pub use self::{dashmapkv::DashMapKeyValueStorage, sledkv::SledKeyValueStorage};
 
 /// A basic interface for a thread-safe key-value store that ensure consistent access to shared
 /// data from multiple different threads.

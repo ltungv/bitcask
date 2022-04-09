@@ -4,7 +4,6 @@ use common::{
     concurrent_read_bulk_bench_iter, concurrent_write_bulk_bench_iter,
     concurrent_write_bulk_bench_iter_no_tempdir, get_bitcask, get_threadpool, rand_kv_pairs,
     sequential_read_bulk_bench_iter, sequential_write_bulk_bench_iter,
-    sequential_write_bulk_bench_iter_no_tempdir,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use opal::storage::KeyValueStorage;
@@ -28,22 +27,18 @@ pub fn bench_write(c: &mut Criterion) {
     g.bench_function("concurrent", |b| {
         let pool = get_threadpool(num_cpus::get_physical());
         pool.install(|| {
+            let (engine, _tmpdir) = get_bitcask();
             b.iter_batched(
-                || {
-                    let (engine, tmpdir) = get_bitcask();
-                    (engine, kv_pairs.clone(), tmpdir)
-                },
+                || (engine.get_handle(), kv_pairs.clone()),
                 concurrent_write_bulk_bench_iter,
                 BatchSize::LargeInput,
             );
         });
     });
     g.bench_function("sequential", |b| {
+        let (engine, _tmpdir) = get_bitcask();
         b.iter_batched(
-            || {
-                let (engine, tmpdir) = get_bitcask();
-                (engine, kv_pairs.clone(), tmpdir)
-            },
+            || (engine.get_handle(), kv_pairs.clone()),
             sequential_write_bulk_bench_iter,
             BatchSize::LargeInput,
         );
@@ -59,8 +54,9 @@ pub fn bench_overwrite(c: &mut Criterion) {
     }
 
     let (engine, _tmpdir) = get_bitcask();
+    let handle = engine.get_handle();
     kv_pairs.iter().cloned().for_each(|(k, v)| {
-        engine.set(k, v).unwrap();
+        handle.set(k, v).unwrap();
     });
 
     let mut g = c.benchmark_group("bitcask_overwrite");
@@ -73,7 +69,7 @@ pub fn bench_overwrite(c: &mut Criterion) {
                 || {
                     let mut kv_pairs = kv_pairs.to_vec();
                     kv_pairs.shuffle(&mut rand::thread_rng());
-                    (engine.clone(), kv_pairs)
+                    (handle.clone(), kv_pairs)
                 },
                 concurrent_write_bulk_bench_iter_no_tempdir,
                 BatchSize::LargeInput,
@@ -85,9 +81,9 @@ pub fn bench_overwrite(c: &mut Criterion) {
             || {
                 let mut kv_pairs = kv_pairs.to_vec();
                 kv_pairs.shuffle(&mut rand::thread_rng());
-                (engine.clone(), kv_pairs)
+                (handle.clone(), kv_pairs)
             },
-            sequential_write_bulk_bench_iter_no_tempdir,
+            sequential_write_bulk_bench_iter,
             BatchSize::LargeInput,
         );
     });
@@ -102,8 +98,9 @@ pub fn bench_read(c: &mut Criterion) {
     }
 
     let (engine, _tmpdir) = get_bitcask();
+    let handle = engine.get_handle();
     kv_pairs.iter().cloned().for_each(|(k, v)| {
-        engine.set(k, v).unwrap();
+        handle.set(k, v).unwrap();
     });
 
     let mut g = c.benchmark_group("bitcask_read");
@@ -116,7 +113,7 @@ pub fn bench_read(c: &mut Criterion) {
                 || {
                     let mut kv_pairs = kv_pairs.clone();
                     kv_pairs.shuffle(&mut rand::thread_rng());
-                    (engine.clone(), kv_pairs)
+                    (engine.get_handle(), kv_pairs)
                 },
                 concurrent_read_bulk_bench_iter,
                 BatchSize::LargeInput,
@@ -128,7 +125,7 @@ pub fn bench_read(c: &mut Criterion) {
             || {
                 let mut kv_pairs = kv_pairs.clone();
                 kv_pairs.shuffle(&mut rand::thread_rng());
-                (engine.clone(), kv_pairs)
+                (engine.get_handle(), kv_pairs)
             },
             sequential_read_bulk_bench_iter,
             BatchSize::LargeInput,
