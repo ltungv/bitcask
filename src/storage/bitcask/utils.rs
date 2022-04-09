@@ -3,7 +3,6 @@ use std::{
     ffi::OsStr,
     fs, io,
     path::{Path, PathBuf},
-    time,
 };
 
 const DATAFILE_EXT: &str = "data";
@@ -54,11 +53,8 @@ where
 }
 
 /// Return system unix nano timestamp
-pub fn timestamp() -> u128 {
-    time::SystemTime::now()
-        .duration_since(time::UNIX_EPOCH)
-        .expect("invalid system time")
-        .as_nanos()
+pub fn timestamp() -> i64 {
+    chrono::Local::now().timestamp_nanos()
 }
 
 #[cfg(test)]

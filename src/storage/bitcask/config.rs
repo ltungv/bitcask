@@ -1,6 +1,7 @@
 use std::{ops::Range, path::Path, time};
 
 use bytesize::ByteSize;
+use chrono::NaiveTime;
 
 use super::Bitcask;
 
@@ -30,7 +31,7 @@ pub enum SyncStrategy {
 #[derive(Debug, Clone)]
 pub(super) struct MergeStrategy {
     pub(super) enable: bool,
-    pub(super) window: Range<u8>,
+    pub(super) window: Range<chrono::NaiveTime>,
     pub(super) triggers: MergeTriggers,
     pub(super) thresholds: MergeThresholds,
     pub(super) check_inverval: time::Duration,
@@ -60,7 +61,7 @@ impl Default for Config {
             sync: SyncStrategy::None,
             merge: MergeStrategy {
                 enable: true,
-                window: (0..24u8),
+                window: (NaiveTime::from_hms(0, 0, 0)..NaiveTime::from_hms(23, 59, 59)),
                 check_inverval: time::Duration::from_secs(180),
                 check_jitter: 30,
                 triggers: MergeTriggers {
@@ -111,9 +112,7 @@ impl Config {
     }
 
     /// Set the merge policy to only merge during the given time window.
-    pub fn merge_window(&mut self, window: Range<u8>) -> &mut Self {
-        assert!((0..24).contains(&window.start));
-        assert!((0..24).contains(&window.end));
+    pub fn merge_window(&mut self, window: Range<chrono::NaiveTime>) -> &mut Self {
         self.merge.window = window;
         self
     }
@@ -167,4 +166,3 @@ impl Config {
         self
     }
 }
-

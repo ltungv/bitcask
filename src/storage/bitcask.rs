@@ -147,13 +147,6 @@ impl Bitcask {
         let (keydir, stats, active_fileid) = rebuild_index(&path)?;
         debug!(?active_fileid, "got new active file ID");
 
-        // In case the user given 0, we still create a reader
-        let readers = if conf.concurrency > 0 {
-            Arc::new(ArrayQueue::new(conf.concurrency))
-        } else {
-            Arc::new(ArrayQueue::new(conf.concurrency + 1))
-        };
-
         let ctx = Arc::new(Context {
             conf,
             path: path.as_ref().to_path_buf(),
@@ -161,6 +154,13 @@ impl Bitcask {
             keydir,
             stats,
         });
+
+        // In case the user given 0, we still create a reader
+        let readers = if ctx.conf.concurrency > 0 {
+            Arc::new(ArrayQueue::new(ctx.conf.concurrency))
+        } else {
+            Arc::new(ArrayQueue::new(ctx.conf.concurrency + 1))
+        };
 
         for _ in 0..readers.capacity() {
             readers
@@ -179,20 +179,19 @@ impl Bitcask {
             written_bytes: 0,
         }));
 
-        let (notify_shutdown, _) = broadcast::channel(1);
         let handle = Handle {
-            ctx,
+            ctx: ctx.clone(),
             writer,
             readers,
         };
 
-        // TODO: only spawn task when merge is enabled
-        // Spawn the background task that performs the merge operation when needed
-        {
-            let shutdown = Shutdown::new(notify_shutdown.subscribe());
+        let (notify_shutdown, _) = broadcast::channel(1);
+
+        if ctx.conf.merge.enable {
             let handle = handle.clone();
+            let shutdown = Shutdown::new(notify_shutdown.subscribe());
             tokio::spawn(async move {
-                if let Err(e) = merge_on_interval(shutdown, handle).await {
+                if let Err(e) = merge_on_interval(handle, shutdown).await {
                     error!(cause=?e, "merge error");
                 }
             });
@@ -204,6 +203,7 @@ impl Bitcask {
         })
     }
 
+    /// Get the handle to the storage
     pub fn get_handle(&self) -> Handle {
         self.handle.clone()
     }
@@ -252,6 +252,14 @@ impl Handle {
 
 impl Context {
     fn can_merge(&self) -> bool {
+        if !self
+            .conf
+            .merge
+            .window
+            .contains(&chrono::Local::now().time())
+        {
+            return false;
+        }
         for entry in self.stats.iter() {
             if entry.dead_bytes > self.conf.merge.triggers.dead_bytes.as_u64()
                 || entry.fragmentation() > self.conf.merge.triggers.fragmentation
@@ -324,7 +332,7 @@ impl Writer {
     #[tracing::instrument(level = "debug", skip(self))]
     fn write(
         &mut self,
-        tstamp: u128,
+        tstamp: i64,
         key: Bytes,
         value: Option<Bytes>,
     ) -> Result<KeyDirEntry, Error> {
@@ -497,7 +505,7 @@ impl Reader {
     }
 }
 
-async fn merge_on_interval(mut shutdown: Shutdown, handle: Handle) -> Result<(), Error> {
+async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
     while !shutdown.is_shutdown() {
         tokio::select! {
             _ = tokio::time::sleep(handle.ctx.conf.merge.check_inverval) => {},
@@ -527,12 +535,12 @@ struct KeyDirEntry {
     fileid: u64,
     len: u64,
     pos: u64,
-    tstamp: u128,
+    tstamp: i64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct HintFileEntry {
-    tstamp: u128,
+    tstamp: i64,
     len: u64,
     pos: u64,
     key: Bytes,
@@ -540,7 +548,7 @@ struct HintFileEntry {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DataFileEntry {
-    tstamp: u128,
+    tstamp: i64,
     key: Bytes,
     value: Option<Bytes>,
 }
