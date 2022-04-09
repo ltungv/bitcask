@@ -573,8 +573,11 @@ impl LogStatistics {
     }
 
     fn fragmentation(&self) -> u8 {
-        let fragmentation = (self.dead_keys * 100) / (self.dead_keys + self.live_keys);
-        fragmentation as u8
+        if self.dead_keys == 0 {
+            0
+        } else {
+            ((self.dead_keys * 100) / (self.dead_keys + self.live_keys)) as u8
+        }
     }
 }
 
