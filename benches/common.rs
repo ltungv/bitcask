@@ -103,7 +103,11 @@ impl KeyValueStorage for SledKeyValueStorage {
 
 pub fn get_bitcask() -> (bitcask::Bitcask, TempDir) {
     let tmpdir = TempDir::new().unwrap();
-    let bitcask = bitcask::Config::default().open(tmpdir.path()).unwrap();
+    let bitcask = bitcask::Config::default()
+        .path(tmpdir.path())
+        .to_owned()
+        .open()
+        .unwrap();
     (bitcask, tmpdir)
 }
 
