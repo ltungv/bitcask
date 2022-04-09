@@ -41,16 +41,11 @@ impl LogDir {
     }
 
     /// Remove readers whose ID is smaller than the given `min_fileid`.
-    pub fn drop_stale(&mut self, min_fileid: u64) {
-        // TODO: Refactor the this method, we only need to drop files that have been merged not
-        // those whose ID is less then `min_fileid`
-        let stale_fileids = self
-            .0
-            .keys()
-            .cloned()
-            .filter(|&id| id < min_fileid)
-            .collect::<Vec<u64>>();
-        for id in stale_fileids {
+    pub fn drop<I>(&mut self, fileds: I)
+    where
+        I: IntoIterator<Item = u64>,
+    {
+        for id in fileds {
             self.0.remove(&id);
         }
     }

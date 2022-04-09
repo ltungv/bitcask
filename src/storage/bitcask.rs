@@ -15,8 +15,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
-use dashmap::DashMap;
+use crossbeam::{queue::ArrayQueue, utils::Backoff};
+use dashmap::{DashMap, DashSet};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -98,11 +98,8 @@ struct Context {
     /// Path to storage directory.
     path: path::PathBuf,
 
-    // TODO: we need a better mechanism for removing stale file descriptors, the new merge process
-    // does not delete all files whose IDs are less than some determined ID. `min_fileid` is
-    // obsolete.
-    /// The minimum file id allowed to be read.
-    min_fileid: AtomicCell<u64>,
+    /// A set of file IDs that have been merged during the instance lifetime.
+    merged: DashSet<u64>,
 
     /// The mapping from keys to the positions of their values on disk.
     keydir: DashMap<Bytes, KeyDirEntry>,
@@ -155,7 +152,7 @@ impl Bitcask {
         let ctx = Arc::new(Context {
             conf,
             path: path.as_ref().to_path_buf(),
-            min_fileid: AtomicCell::new(0),
+            merged: DashSet::default(),
             keydir,
             stats,
         });
@@ -466,20 +463,22 @@ impl Writer {
                     debug!(merge_fileid, "new merge file");
                 }
             }
-            readers.drop_stale(merge_fileid);
+            readers.drop(fileids_to_merge.iter().copied());
         }
 
-        self.ctx.min_fileid.store(min_merge_fileid);
+        for id in &fileids_to_merge {
+            self.ctx.merged.insert(*id);
+        }
 
         // Remove stale files from system and storage statistics
-        for id in fileids_to_merge {
-            self.ctx.stats.remove(&id);
-            if let Err(e) = fs::remove_file(utils::hintfile_name(path, id)) {
+        for id in &fileids_to_merge {
+            self.ctx.stats.remove(id);
+            if let Err(e) = fs::remove_file(utils::hintfile_name(path, *id)) {
                 if e.kind() != io::ErrorKind::NotFound {
                     return Err(e.into());
                 }
             }
-            if let Err(e) = fs::remove_file(utils::datafile_name(path, id)) {
+            if let Err(e) = fs::remove_file(utils::datafile_name(path, *id)) {
                 if e.kind() != io::ErrorKind::NotFound {
                     return Err(e.into());
                 }
@@ -513,8 +512,9 @@ impl Reader {
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
         match self.ctx.keydir.get(&key) {
             Some(keydir_entry) => {
+                let merged: Vec<u64> = self.ctx.merged.iter().map(|id| *id).collect();
                 let mut readers = self.readers.borrow_mut();
-                readers.drop_stale(self.ctx.min_fileid.load());
+                readers.drop(merged);
 
                 // SAFETY: We have taken `keydir_entry` from KeyDir which is ensured to point to
                 // valid data file positions. Thus we can be confident that the Mmap won't be
