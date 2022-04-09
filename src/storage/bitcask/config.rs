@@ -29,28 +29,28 @@ pub enum SyncStrategy {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct MergeStrategy {
-    pub(super) enable: bool,
-    pub(super) window: Range<chrono::NaiveTime>,
-    pub(super) triggers: MergeTriggers,
-    pub(super) thresholds: MergeThresholds,
-    pub(super) check_inverval: time::Duration,
-    pub(super) check_jitter: u8,
+pub struct MergeStrategy {
+    pub enable: bool,
+    pub window: Range<chrono::NaiveTime>,
+    pub triggers: MergeTriggers,
+    pub thresholds: MergeThresholds,
+    pub check_inverval: time::Duration,
+    pub check_jitter: u8,
 }
 
 /// List of conditions that trigger the data files merging process
 #[derive(Debug, Clone)]
-pub(super) struct MergeTriggers {
-    pub(super) fragmentation: u8,
-    pub(super) dead_bytes: ByteSize,
+pub struct MergeTriggers {
+    pub fragmentation: u8,
+    pub dead_bytes: ByteSize,
 }
 
-/// pub(super) List of conditions that trigger the data files merging process
+/// List of conditions that trigger the data files merging process
 #[derive(Debug, Clone)]
-pub(super) struct MergeThresholds {
-    pub(super) fragmentation: u8,
-    pub(super) dead_bytes: ByteSize,
-    pub(super) small_file: ByteSize,
+pub struct MergeThresholds {
+    pub fragmentation: u8,
+    pub dead_bytes: ByteSize,
+    pub small_file: ByteSize,
 }
 
 impl Default for Config {

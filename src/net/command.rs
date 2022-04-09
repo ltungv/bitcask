@@ -85,13 +85,13 @@ impl TryFrom<Frame> for Command {
 
 /// A parser that extracts values contained within a command frame
 #[derive(Debug)]
-pub struct Parser {
+struct Parser {
     frames: std::vec::IntoIter<Frame>,
 }
 
 impl Parser {
     /// Create a new parse for the given frame
-    pub fn new(frame: Frame) -> Result<Self, Error> {
+    fn new(frame: Frame) -> Result<Self, Error> {
         match frame {
             Frame::Array(frames) => Ok(Self {
                 frames: frames.into_iter(),
