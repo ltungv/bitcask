@@ -1,6 +1,5 @@
-use std::{env, fs, net::IpAddr, ops::Range, path, time};
+use std::{env, fs, net::IpAddr, path};
 
-use bytesize::ByteSize;
 use clap::{Args, Parser, Subcommand};
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -70,8 +69,7 @@ pub async fn main() -> Result<(), anyhow::Error> {
             let db_dir = args.path.unwrap_or(env::current_dir()?);
             fs::create_dir_all(&db_dir)?;
 
-            let conf = bitcask::Config::default();
-            let storage = conf.open(db_dir)?;
+            let storage = bitcask::Config::default().open(db_dir)?;
             let server = Server::new(listener, storage.get_handle(), signal::ctrl_c());
             server.run().await;
         }
