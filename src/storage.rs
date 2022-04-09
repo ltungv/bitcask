@@ -6,9 +6,11 @@ mod sledkv;
 
 use bytes::Bytes;
 
-pub use bitcask::{Handle, Config};
-pub use dashmapkv::DashMapKeyValueStorage;
-pub use sledkv::SledKeyValueStorage;
+pub use self::{
+    bitcask::{Config, Handle},
+    dashmapkv::DashMapKeyValueStorage,
+    sledkv::SledKeyValueStorage,
+};
 
 /// A basic interface for a thread-safe key-value store that ensure consistent access to shared
 /// data from multiple different threads.

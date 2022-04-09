@@ -5,8 +5,9 @@ mod config;
 mod log;
 mod utils;
 
-pub use config::Config;
 use tokio::sync::broadcast;
+
+pub use self::config::Config;
 
 use std::{
     cell::RefCell,
@@ -23,13 +24,14 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
-use self::utils::datafile_name;
-
+use self::{
+    log::{LogDir, LogIterator, LogWriter},
+    utils::datafile_name,
+};
 use super::KeyValueStorage;
 use crate::shutdown::Shutdown;
-use log::{LogDir, LogIterator, LogWriter};
 
 /// Error returned by Bitcask
 #[derive(Error, Debug)]
@@ -119,32 +121,6 @@ struct Writer {
 struct Reader {
     ctx: Arc<Context>,
     readers: RefCell<LogDir>,
-}
-
-async fn merge_on_interval(mut shutdown: Shutdown, handle: Handle) -> Result<(), Error> {
-    while !shutdown.is_shutdown() {
-        tokio::select! {
-            _ = tokio::time::sleep(handle.ctx.conf.merge.check_inverval) => {},
-            _ = shutdown.recv() => {
-                info!("stop merge background task");
-                return Ok(());
-            },
-        };
-
-        if handle.ctx.can_merge() {
-            let handle = handle.clone();
-            let merge_result = tokio::task::spawn_blocking(move || {
-                let _ = &handle;
-                handle.writer.lock().merge()
-            })
-            .await?;
-
-            if let Err(e) = merge_result {
-                error!(cause=?e, "merge error");
-            }
-        }
-    }
-    Ok(())
 }
 
 impl Bitcask {
@@ -514,6 +490,31 @@ impl Reader {
     }
 }
 
+async fn merge_on_interval(mut shutdown: Shutdown, handle: Handle) -> Result<(), Error> {
+    while !shutdown.is_shutdown() {
+        tokio::select! {
+            _ = tokio::time::sleep(handle.ctx.conf.merge.check_inverval) => {},
+            _ = shutdown.recv() => {
+                debug!("stopping merge background task");
+                return Ok(());
+            },
+        };
+
+        if handle.ctx.can_merge() {
+            let handle = handle.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                let _ = &handle;
+                handle.writer.lock().merge()
+            })
+            .await?
+            {
+                error!(cause=?e, "merge error");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct KeyDirEntry {
     fileid: u64,
@@ -689,8 +690,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn bitcask_sequential_read_after_write_should_return_the_written_data() {
+    #[tokio::test]
+    async fn bitcask_sequential_read_after_write_should_return_the_written_data() {
         let dir = tempfile::tempdir().unwrap();
         let conf = Config::default().concurrency(1).to_owned();
         let kv = conf.open(dir.path()).unwrap();
@@ -704,8 +705,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn bitcask_rebuilt_keydir_correctly() {
+    #[tokio::test]
+    async fn bitcask_rebuilt_keydir_correctly() {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
@@ -739,8 +740,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bitcask_rebuilt_stats_correctly() {
+    #[tokio::test]
+    async fn bitcask_rebuilt_stats_correctly() {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
@@ -785,8 +786,8 @@ mod tests {
         assert_eq!(5000, deads);
     }
 
-    #[test]
-    fn bitcask_collect_statistics() {
+    #[tokio::test]
+    async fn bitcask_collect_statistics() {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()

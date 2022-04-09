@@ -2,7 +2,7 @@ use std::{ops::Range, path::Path, time};
 
 use bytesize::ByteSize;
 
-use super::{Bitcask, Handle};
+use super::Bitcask;
 
 /// Configuration for a `Bitcask` instance. We try to mirror the configurations
 /// available in [Configuring Bitcask].
