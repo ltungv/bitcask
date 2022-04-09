@@ -1,3 +1,5 @@
+//! Shutdown signal for asynchronous tasks.
+
 use tokio::sync::broadcast;
 
 /// Listens for the server shutdown signal.

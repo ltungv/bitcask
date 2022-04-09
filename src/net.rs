@@ -9,6 +9,4 @@ mod client;
 mod error;
 mod server;
 
-pub use client::Client;
-pub use error::Error;
-pub use server::Server;
+pub use self::{client::Client, error::Error, server::Server};

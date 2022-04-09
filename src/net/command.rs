@@ -4,9 +4,7 @@ mod del;
 mod get;
 mod set;
 
-pub use del::Del;
-pub use get::Get;
-pub use set::Set;
+pub use self::{del::Del, get::Get, set::Set};
 
 use std::convert::TryFrom;
 
