@@ -411,6 +411,9 @@ impl Writer {
                     )?
                 };
 
+                let mut stats = self.ctx.stats.entry(merge_fileid).or_default();
+                stats.add_live();
+
                 // update keydir so it points to the merge data file
                 keydir_entry.fileid = merge_fileid;
                 keydir_entry.len = nbytes;
