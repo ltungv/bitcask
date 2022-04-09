@@ -42,6 +42,8 @@ impl LogDir {
 
     /// Remove readers whose ID is smaller than the given `min_fileid`.
     pub fn drop_stale(&mut self, min_fileid: u64) {
+        // TODO: Refactor the this method, we only need to drop files that have been merged not
+        // those whose ID is less then `min_fileid`
         let stale_fileids = self
             .0
             .keys()
