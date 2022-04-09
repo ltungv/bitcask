@@ -22,9 +22,9 @@ pub struct Config {
 pub enum SyncStrategy {
     /// Data is written to disk when the operating system flushes its buffers.
     None,
-    /// Use the O_SYNC flags to force a synchronization after every write.
-    OSync,
-    /// Synchronize the the file system that the specified interval.
+    /// Force a synchronization after every write.
+    Always,
+    /// Synchronize the the file system at the specified interval.
     Interval(time::Duration),
 }
 

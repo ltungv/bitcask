@@ -20,7 +20,12 @@ where
         let reader = BufReader::new(r);
         Ok(Self { pos, reader })
     }
+}
 
+impl<R> BufReaderWithPos<R>
+where
+    R: Read,
+{
     /// Return the last read position.
     pub fn pos(&self) -> u64 {
         self.pos
@@ -71,10 +76,20 @@ where
         let writer = BufWriter::new(w);
         Ok(Self { pos, writer })
     }
+}
 
+impl<W> BufWriterWithPos<W>
+where
+    W: Write,
+{
     /// Return the last written postion.
     pub fn pos(&self) -> u64 {
         self.pos
+    }
+
+    /// Get a reference to the underlying writer.
+    pub fn get_ref(&self) -> &W {
+        self.writer.get_ref()
     }
 }
 

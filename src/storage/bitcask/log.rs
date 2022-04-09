@@ -75,6 +75,11 @@ impl LogWriter {
         let len = self.0.pos() - pos;
         Ok(LogIndex { len, pos })
     }
+
+    /// Synchronize all data to disk.
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        self.0.get_ref().sync_all()
+    }
 }
 
 /// A random-access file reader that deserializes data using `bincode`.

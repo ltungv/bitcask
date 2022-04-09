@@ -12,6 +12,7 @@ use std::{
     io::{self, BufWriter},
     path::{self, Path},
     sync::Arc,
+    time,
 };
 
 use bytes::Bytes;
@@ -22,7 +23,7 @@ use rand::prelude::Distribution;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::broadcast;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 pub use self::config::{Config, SyncStrategy};
 use self::{
@@ -203,10 +204,16 @@ impl Bitcask {
             });
         }
 
-        // TODO: Handling disk synchronization:
-        // + If a sync interval is set, spawn the background that handles synchronization.
-        // + If the `OSync` strategy is used, use O_SYNC whenever we create an active log file.
-        // + If `None`, do nothing.
+        // Spawn sync background task if sync is enable
+        if let SyncStrategy::Interval(d) = handle.ctx.conf.sync {
+            let handle = handle.clone();
+            let shutdown = Shutdown::new(notify_shutdown.subscribe());
+            tokio::spawn(async move {
+                if let Err(e) = sync_on_interval(d, handle, shutdown).await {
+                    error!(cause=?e, "sync error");
+                }
+            });
+        }
 
         Ok(Self {
             handle,
@@ -362,6 +369,10 @@ impl Writer {
         // Record number of bytes have been written to the active file
         self.written_bytes += index.len;
 
+        if let SyncStrategy::Always = self.ctx.conf.sync {
+            self.writer.sync_all()?;
+        }
+
         // NOTE: This explicit scope is used to control the lifetime of `stats` which we borrow
         // from `self`. `stats` has to be dropped before we make a call to `new_active_datafile`.
         {
@@ -501,6 +512,12 @@ impl Writer {
         self.written_bytes = 0;
         Ok(())
     }
+
+    /// Get the handle to the storage
+    pub fn sync_all(&mut self) -> Result<(), Error> {
+        self.writer.sync_all()?;
+        Ok(())
+    }
 }
 
 impl Reader {
@@ -548,11 +565,10 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
         tokio::select! {
             _ = tokio::time::sleep(dist.sample(&mut rand::thread_rng())) => {},
             _ = shutdown.recv() => {
-                debug!("stopping merge background task");
+                info!("stopping merge background task");
                 return Ok(());
             },
         };
-
         if handle.ctx.can_merge() {
             let handle = handle.clone();
             if let Err(e) = tokio::task::spawn_blocking(move || {
@@ -564,6 +580,25 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
                 error!(cause=?e, "merge error");
             }
         }
+    }
+    Ok(())
+}
+
+async fn sync_on_interval(
+    interval: time::Duration,
+    handle: Handle,
+    mut shutdown: Shutdown,
+) -> Result<(), Error> {
+    while !shutdown.is_shutdown() {
+        // Wake up the task when a specific interval has passed or when the storage is shutdown.
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {},
+            _ = shutdown.recv() => {
+                info!("stopping sync background task");
+                return Ok(());
+            },
+        };
+        handle.writer.lock().sync_all()?;
     }
     Ok(())
 }
