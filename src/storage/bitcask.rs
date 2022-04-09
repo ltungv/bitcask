@@ -69,7 +69,7 @@ pub struct Bitcask {
     /// A channel for broadcasting shutdown signal so background tasks can gracefully stop. Tasks
     /// that want to check if the storage has been shutted down subscribe to this channel and wait
     /// for the signal that is sent when the channel is closed after this struct is dropped.
-    notify_shutdown: broadcast::Sender<()>,
+    _notify_shutdown: broadcast::Sender<()>,
 }
 
 /// A handle to the Bitcask instance that allows multiple different threads to safely access it.
@@ -199,7 +199,7 @@ impl Bitcask {
 
         Ok(Self {
             handle,
-            notify_shutdown,
+            _notify_shutdown: notify_shutdown,
         })
     }
 
