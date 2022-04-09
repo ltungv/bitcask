@@ -5,8 +5,8 @@ use std::{
 };
 
 use bytes::Buf;
+use lru::LruCache;
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::BTreeMap;
 
 use super::{
     bufio::{BufReaderWithPos, BufWriterWithPos},
@@ -21,8 +21,14 @@ pub struct LogIndex {
 }
 
 /// A mapping of log file IDs to log file readers.
-#[derive(Debug, Default)]
-pub struct LogDir(BTreeMap<u64, LogReader>);
+#[derive(Debug)]
+pub struct LogDir(LruCache<u64, LogReader>);
+
+impl Default for LogDir {
+    fn default() -> Self {
+        Self(LruCache::new(128))
+    }
+}
 
 impl LogDir {
     /// Return the reader of the file with the given `fileid`. If there's no reader for the file
@@ -31,23 +37,12 @@ impl LogDir {
     where
         P: AsRef<Path>,
     {
-        if !self.0.contains_key(&fileid) {
+        if !self.0.contains(&fileid) {
             let file = open(utils::datafile_name(&path, fileid))?;
             let reader = LogReader::new(file)?;
-            Ok(self.0.entry(fileid).or_insert(reader))
-        } else {
-            Ok(self.0.get_mut(&fileid).expect("unreachable error"))
+            self.0.put(fileid, reader);
         }
-    }
-
-    /// Remove readers whose ID is smaller than the given `min_fileid`.
-    pub fn drop<I>(&mut self, fileds: I)
-    where
-        I: IntoIterator<Item = u64>,
-    {
-        for id in fileds {
-            self.0.remove(&id);
-        }
+        Ok(self.0.get_mut(&fileid).expect("unreachable error"))
     }
 }
 

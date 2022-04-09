@@ -18,7 +18,7 @@ use std::{
 use bytes::Bytes;
 use chrono::Timelike;
 use crossbeam::{queue::ArrayQueue, utils::Backoff};
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use rand::prelude::Distribution;
 use serde::{Deserialize, Serialize};
@@ -98,9 +98,6 @@ struct Context {
     /// Storage configurations.
     conf: Config,
 
-    /// A set of file IDs that have been merged during the instance lifetime.
-    merged: DashSet<u64>,
-
     /// The mapping from keys to the positions of their values on disk.
     keydir: DashMap<Bytes, KeyDirEntry>,
 
@@ -150,7 +147,6 @@ impl Bitcask {
 
         let ctx = Arc::new(Context {
             conf,
-            merged: DashSet::default(),
             keydir,
             stats,
         });
@@ -490,11 +486,6 @@ impl Writer {
                     debug!(merge_fileid, "new merge file");
                 }
             }
-            readers.drop(fileids_to_merge.iter().copied());
-        }
-
-        for id in &fileids_to_merge {
-            self.ctx.merged.insert(*id);
         }
 
         // Remove stale files from system and storage statistics
@@ -545,14 +536,12 @@ impl Reader {
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
         match self.ctx.keydir.get(&key) {
             Some(keydir_entry) => {
-                let mut readers = self.readers.borrow_mut();
-                readers.drop(self.ctx.merged.iter().map(|id| *id));
-
                 // SAFETY: We have taken `keydir_entry` from KeyDir which is ensured to point to
                 // valid data file positions. Thus we can be confident that the Mmap won't be
                 // mapped to an invalid segment.
                 let datafile_entry = unsafe {
-                    readers
+                    self.readers
+                        .borrow_mut()
                         .get(self.ctx.conf.path.as_path(), keydir_entry.fileid)?
                         .at::<DataFileEntry>(keydir_entry.len, keydir_entry.pos)?
                 };

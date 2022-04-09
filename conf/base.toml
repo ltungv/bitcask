@@ -2,7 +2,7 @@ server.host = "0.0.0.0"
 server.port = 6379
 
 bitcask.path = "db"
-bitcask.concurrency = 8
+bitcask.concurrency = 4
 bitcask.max_file_size = 2000000000
 bitcask.sync = "none"
 
