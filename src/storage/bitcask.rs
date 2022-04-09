@@ -142,6 +142,8 @@ struct Reader {
 
 impl Bitcask {
     fn open(conf: Config) -> Result<Self, Error> {
+        info!(?conf, "openning bitcask");
+
         // Reconstruct in-memory data from on-disk data
         let (keydir, stats, active_fileid) = rebuild_storage(&conf.path)?;
         debug!(?active_fileid, "got new active file ID");
@@ -557,7 +559,9 @@ impl Reader {
 
 /// A periodic background task that checks the merge triggers and performs merging when the trigger
 /// conditions are met.
+#[tracing::instrument(skip(handle, shutdown))]
 async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
+    let _ = &handle;
     let check_inverval = time::Duration::from_millis(handle.ctx.conf.merge.check_interval_ms);
     let jitter_amount = check_inverval.mul_f64(handle.ctx.conf.merge.check_jitter);
     let dist = rand::distributions::Uniform::new_inclusive(
@@ -589,11 +593,14 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
     Ok(())
 }
 
+/// A periodic background task that forces disk synchronizations.
+#[tracing::instrument(skip(interval, handle, shutdown))]
 async fn sync_on_interval(
     interval: time::Duration,
     handle: Handle,
     mut shutdown: Shutdown,
 ) -> Result<(), Error> {
+    let _ = &handle;
     while !shutdown.is_shutdown() {
         // Wake up the task when a specific interval has passed or when the storage is shutdown.
         tokio::select! {
