@@ -77,7 +77,7 @@ impl LogWriter {
     }
 
     /// Synchronize all data to disk.
-    pub fn sync_all(&mut self) -> io::Result<()> {
+    pub fn sync(&mut self) -> io::Result<()> {
         self.0.get_ref().sync_all()
     }
 }

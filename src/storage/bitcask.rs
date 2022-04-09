@@ -270,6 +270,14 @@ impl Handle {
             backoff.spin();
         }
     }
+
+    fn merge(&self) -> Result<(), Error> {
+        self.writer.lock().merge()
+    }
+
+    fn sync(&self) -> Result<(), Error> {
+        self.writer.lock().sync()
+    }
 }
 
 impl Context {
@@ -377,7 +385,7 @@ impl Writer {
         self.written_bytes += index.len;
 
         if let SyncStrategy::Always = self.ctx.conf.sync {
-            self.writer.sync_all()?;
+            self.writer.sync()?;
         }
 
         // NOTE: This explicit scope is used to control the lifetime of `stats` which we borrow
@@ -521,8 +529,8 @@ impl Writer {
     }
 
     /// Get the handle to the storage
-    pub fn sync_all(&mut self) -> Result<(), Error> {
-        self.writer.sync_all()?;
+    pub fn sync(&mut self) -> Result<(), Error> {
+        self.writer.sync()?;
         Ok(())
     }
 }
@@ -580,12 +588,7 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
         };
         if handle.ctx.can_merge() {
             let handle = handle.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || {
-                let _ = &handle;
-                handle.writer.lock().merge()
-            })
-            .await?
-            {
+            if let Err(e) = tokio::task::spawn_blocking(move || handle.merge()).await? {
                 error!(cause=?e, "merge error");
             }
         }
@@ -610,7 +613,8 @@ async fn sync_on_interval(
                 return Ok(());
             },
         };
-        handle.writer.lock().sync_all()?;
+        let handle = handle.clone();
+        tokio::task::spawn_blocking(move || handle.sync()).await??;
     }
     Ok(())
 }
