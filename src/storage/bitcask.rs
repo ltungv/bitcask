@@ -252,19 +252,14 @@ impl Handle {
 
 impl Context {
     fn can_merge(&self) -> bool {
-        if !self
-            .conf
-            .merge
-            .window
-            .contains(&chrono::Local::now().time())
-        {
+        let now = chrono::Local::now().time();
+        if !self.conf.merge.window.contains(&now) {
             return false;
         }
         for entry in self.stats.iter() {
             if entry.dead_bytes > self.conf.merge.triggers.dead_bytes.as_u64()
                 || entry.fragmentation() > self.conf.merge.triggers.fragmentation
             {
-                // TODO: check time window
                 return true;
             }
         }
