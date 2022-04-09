@@ -14,13 +14,12 @@ pub trait KeyValueStorage: Clone + Send + 'static {
     /// Error type of the underlying engine
     type Error: std::error::Error + Send + Sync;
 
-    /// Set the value of a key, overwriting any existing value at that key and return the overwritten
-    /// value
+    /// Set the value of a key and overwrite any existing value at that key.
     fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error>;
 
-    /// Get the value of a key, if it exists. Return `None` if there's no value for the given key
+    /// Get the value of a key, if it exists. Otherwise, return `None`.
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error>;
 
-    /// Delete a key and return its value, if it exists. Return `None` if the key does not exist
+    /// Delete a key and return `true`, if it exists. Otherwise, return `false`.
     fn del(&self, key: Bytes) -> Result<bool, Self::Error>;
 }
