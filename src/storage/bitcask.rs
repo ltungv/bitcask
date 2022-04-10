@@ -83,7 +83,7 @@ pub struct Bitcask {
 /// A handle that can be shared across threads that want to access the storage.
 #[derive(Clone, Debug)]
 pub struct Handle {
-    /// The states of the storage that are shared across multiple threads.
+    /// The states that are shared between the writer and the readers.
     ctx: Arc<Context>,
 
     /// A mutex-protected writer used for appending data entry to the active data files. All
@@ -116,10 +116,10 @@ struct Context {
 /// file locations.
 #[derive(Debug)]
 struct Writer {
-    /// The shared states.
+    /// The states that are shared with the readers.
     ctx: Arc<Context>,
 
-    /// The thread-local cache of file descriptors for reading the data files.
+    /// The cache of file descriptors for reading the data files.
     readers: RefCell<LogDir>,
 
     /// A writer that appends entries to the currently active file.
@@ -137,10 +137,10 @@ struct Writer {
 /// synchronization between threads.
 #[derive(Debug)]
 struct Reader {
-    /// The shared states.
+    /// The states that are shared with the writer.
     ctx: Arc<Context>,
 
-    /// The thread-local cache of file descriptors for reading the data files.
+    /// The cache of file descriptors for reading the data files.
     readers: RefCell<LogDir>,
 }
 
@@ -170,14 +170,14 @@ impl Bitcask {
             readers
                 .push(Reader {
                     ctx: ctx.clone(),
-                    readers: RefCell::default(),
+                    readers: RefCell::new(LogDir::new(ctx.conf.readers_cache_size)),
                 })
                 .expect("unreachable error");
         }
 
         let writer = Arc::new(Mutex::new(Writer {
             ctx: ctx.clone(),
-            readers: RefCell::default(),
+            readers: RefCell::new(LogDir::new(ctx.conf.readers_cache_size)),
             writer: LogWriter::new(log::create(utils::datafile_name(
                 &ctx.conf.path,
                 active_fileid,

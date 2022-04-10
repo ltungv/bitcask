@@ -15,6 +15,8 @@ pub struct Config {
     pub path: PathBuf,
 
     pub(super) concurrency: usize,
+    pub(super) readers_cache_size: usize,
+
     pub(super) max_file_size: u64,
     pub(super) sync: SyncStrategy,
     pub(super) merge: MergeStrategy,
@@ -71,6 +73,7 @@ impl Default for Config {
         Self {
             path: std::env::current_dir().unwrap(),
             concurrency: num_cpus::get(),
+            readers_cache_size: 256,
             max_file_size: 2 * 1024 * 1024 * 1024,
             sync: SyncStrategy::default(),
             merge: MergeStrategy::default(),
@@ -136,6 +139,13 @@ impl Config {
     /// Set the max number of concurrent readers. Default to the number of logical cores.
     pub fn concurrency(&mut self, concurrency: usize) -> &mut Self {
         self.concurrency = concurrency;
+        self
+    }
+
+    /// Set the size of the readers cache used by the writer and each of the readers.
+    /// Default to `256`
+    pub fn readers_cache_size(&mut self, readers_cache_size: usize) -> &mut Self {
+        self.readers_cache_size = readers_cache_size;
         self
     }
 

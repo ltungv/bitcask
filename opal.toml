@@ -6,6 +6,8 @@ server.port = 6379
 bitcask.path = "db"
 # Bitcask number of concurrent readers
 bitcask.concurrency = 4
+# Bitcask readers cache size used by the writer and each of the readers
+bitcask.readers_cache_size = 256
 # Bitcask maximum allowed file size
 bitcask.max_file_size = 2000000000
 

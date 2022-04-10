@@ -20,17 +20,16 @@ pub struct LogIndex {
     pub pos: u64,
 }
 
-/// A mapping of log file IDs to log file readers.
+/// A wrapper arround a LRU cache of log readers
 #[derive(Debug)]
 pub struct LogDir(LruCache<u64, LogReader>);
 
-impl Default for LogDir {
-    fn default() -> Self {
-        Self(LruCache::new(128))
-    }
-}
-
 impl LogDir {
+    /// Create a new LRU readers cache with the specified size.
+    pub fn new(size: usize) -> Self {
+        Self(LruCache::new(size))
+    }
+
     /// Return the reader of the file with the given `fileid`. If there's no reader for the file
     /// with the given `fileid`, create a new reader and return it.
     pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&mut LogReader>
