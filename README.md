@@ -65,14 +65,14 @@ bitcask.max_file_size = 2000000000
 bitcask.sync = "none"
 
 bitcask.merge.policy = "always"
-bitcask.merge.check_interval_ms = 1800
+bitcask.merge.check_interval_ms = 180000
 bitcask.merge.check_jitter = 0.3
 
 bitcask.merge.triggers.fragmentation = 0.6
-bitcask.merge.triggers.dead_bytes = 512
+bitcask.merge.triggers.dead_bytes = 512000000
 
 bitcask.merge.thresholds.fragmentation = 0.4
-bitcask.merge.thresholds.dead_bytes = 128
+bitcask.merge.thresholds.dead_bytes = 128000000
 bitcask.merge.thresholds.small_file = 10000000
 ```
 
