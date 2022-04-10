@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use rand::prelude::Distribution;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::broadcast;
+use tokio::{join, sync::broadcast};
 use tracing::{debug, error, info};
 
 pub use self::config::{Config, SyncStrategy};
@@ -73,7 +73,7 @@ pub struct Bitcask {
     /// that want to check if the storage has been shutted down subscribe to this channel and wait
     /// for the signal that is sent when this struct is dropped. We do not send messages directly
     /// through the channel but rely on it's `Drop` implementation to send a closing signal.
-    _notify_shutdown: broadcast::Sender<()>,
+    notify_shutdown: broadcast::Sender<()>,
 }
 
 /// A handle that can be shared across threads that want to access the storage.
@@ -184,19 +184,23 @@ impl Bitcask {
             readers,
         };
 
-        // We'll tie the lifetime of this channel to the lifetime of our `Bitcask` struct so it's
-        // closed when the struct is dropped
+        // We'll tie the lifetime of this channel to the lifetime of our `Bitcask` struct so
+        // the channel is closed when the struct is dropped
         let (notify_shutdown, _) = broadcast::channel(1);
-        {
-            let handle = handle.clone();
-            let notify_shutdown = notify_shutdown.clone();
-            std::thread::spawn(move || background_tasks(handle, notify_shutdown));
-        }
-
-        Ok(Self {
+        let bitcask = Self {
             handle,
-            _notify_shutdown: notify_shutdown,
-        })
+            notify_shutdown,
+        };
+
+        // We spawn a dedicated thread for the background task. The thread will host a
+        // Tokio runtime to schedule tasks for execution.
+        let handle = bitcask.get_handle();
+        let notify_shutdown = bitcask.notify_shutdown.clone();
+        std::thread::Builder::new()
+            .name("bitcask-background-tasks".into())
+            .spawn(move || background_tasks(handle, notify_shutdown))?;
+
+        Ok(bitcask)
     }
 
     /// Get the handle to the storage
@@ -531,38 +535,42 @@ impl Reader {
     }
 }
 
+#[tracing::instrument(skip(handle, notify_shutdown))]
 fn background_tasks(handle: Handle, notify_shutdown: broadcast::Sender<()>) -> Result<(), Error> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
-    // Spawn merge background task if merge is enable
-    match handle.ctx.conf.merge.policy {
-        MergePolicy::Always | MergePolicy::Window { start: _, end: _ } => {
-            let handle = handle.clone();
-            let shutdown = Shutdown::new(notify_shutdown.subscribe());
-            rt.spawn(async move {
-                if let Err(e) = merge_on_interval(handle, shutdown).await {
-                    error!(cause=?e, "merge error");
-                }
-            });
-        }
-        _ => {}
-    }
-
-    // Spawn sync background task if sync is enable
-    if let SyncStrategy::IntervalMs(d) = handle.ctx.conf.sync {
+    let merge_join_handle = {
         let handle = handle.clone();
         let shutdown = Shutdown::new(notify_shutdown.subscribe());
         rt.spawn(async move {
-            if let Err(e) = sync_on_interval(time::Duration::from_millis(d), handle, shutdown).await
-            {
+            if let Err(e) = merge_on_interval(handle, shutdown).await {
+                error!(cause=?e, "merge error");
+            }
+        })
+    };
+    let sync_join_handle = {
+        let handle = handle.clone();
+        let shutdown = Shutdown::new(notify_shutdown.subscribe());
+        rt.spawn(async move {
+            if let Err(e) = sync_on_interval(handle, shutdown).await {
                 error!(cause=?e, "sync error");
             }
-        });
-    }
+        })
+    };
 
+    // We drop this early so there's only 1 channel Sender held by our bitcask instance
     drop(notify_shutdown);
+    // Block until we receive something on the shutdown_complete channel, which is when
+    // all Senders have been dropped.
+    let (r1, r2) = rt.block_on(async { join!(merge_join_handle, sync_join_handle) });
+    if let Err(e) = r1 {
+        error!(cause=?e, "merge error");
+    }
+    if let Err(e) = r2 {
+        error!(cause=?e, "sync error");
+    }
     Ok(())
 }
 
@@ -570,14 +578,12 @@ fn background_tasks(handle: Handle, notify_shutdown: broadcast::Sender<()>) -> R
 /// conditions are met.
 #[tracing::instrument(skip(handle, shutdown))]
 async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
-    let _ = &handle;
-    let check_inverval = time::Duration::from_millis(handle.ctx.conf.merge.check_interval_ms);
-    let jitter_amount = check_inverval.mul_f64(handle.ctx.conf.merge.check_jitter);
-    let dist = rand::distributions::Uniform::new_inclusive(
-        check_inverval - jitter_amount,
-        check_inverval + jitter_amount,
-    );
-
+    if let MergePolicy::Never = handle.ctx.conf.merge.policy {
+        return Ok(());
+    }
+    let interval = time::Duration::from_millis(handle.ctx.conf.merge.check_interval_ms);
+    let jitter = interval.mul_f64(handle.ctx.conf.merge.check_jitter);
+    let dist = rand::distributions::Uniform::new_inclusive(interval - jitter, interval + jitter);
     while !shutdown.is_shutdown() {
         // Wake up the task when a specific interval has passed or when the storage is shutdown.
         tokio::select! {
@@ -598,24 +604,24 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
 }
 
 /// A periodic background task that forces disk synchronizations.
-#[tracing::instrument(skip(interval, handle, shutdown))]
-async fn sync_on_interval(
-    interval: time::Duration,
-    handle: Handle,
-    mut shutdown: Shutdown,
-) -> Result<(), Error> {
-    let _ = &handle;
-    while !shutdown.is_shutdown() {
-        // Wake up the task when a specific interval has passed or when the storage is shutdown.
-        tokio::select! {
-            _ = tokio::time::sleep(interval) => {},
-            _ = shutdown.recv() => {
-                info!("stopping sync background task");
-                return Ok(());
-            },
-        };
-        let handle = handle.clone();
-        tokio::task::spawn_blocking(move || handle.sync()).await??;
+#[tracing::instrument(skip(handle, shutdown))]
+async fn sync_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
+    if let SyncStrategy::IntervalMs(d) = handle.ctx.conf.sync {
+        let interval = time::Duration::from_millis(d);
+        while !shutdown.is_shutdown() {
+            // Wake up the task when a specific interval has passed or when the storage is shutdown.
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {},
+                _ = shutdown.recv() => {
+                    info!("stopping sync background task");
+                    return Ok(());
+                },
+            };
+            let handle = handle.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || handle.sync()).await? {
+                error!(cause=?e, "sync error");
+            }
+        }
     }
     Ok(())
 }
