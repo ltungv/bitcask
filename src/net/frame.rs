@@ -244,7 +244,7 @@ fn get_integer(buf: &mut Cursor<&[u8]>) -> Result<i64, Error> {
     if idx == start || buf.get_ref()[idx] != b'\r' {
         // fails when there's no digit or when the integer is not ended with "\r\n"
         return Err(Error::NotInteger(
-            String::from_utf8_lossy(&buf.get_ref()[idx..=end]).to_string(),
+            String::from_utf8_lossy(&buf.get_ref()[buf_init_pos..=idx]).to_string(),
         ));
     }
     buf.advance(idx - start + 2); // skip "\r\n"
@@ -361,12 +361,12 @@ mod tests {
 
     #[test]
     fn parse_integer_fails_when_line_there_is_no_digit() {
-        assert_frame_error(b":\r\n", Error::NotInteger("\r\n".into()));
+        assert_frame_error(b":\r\n", Error::NotInteger("\r".into()));
     }
 
     #[test]
     fn parse_integer_fails_when_there_is_non_digit() {
-        assert_frame_error(b":nan\r\n", Error::NotInteger("nan\r\n".into()));
+        assert_frame_error(b":nan\r\n", Error::NotInteger("n".into()));
     }
 
     #[test]
