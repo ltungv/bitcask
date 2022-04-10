@@ -17,7 +17,7 @@ use std::{
 
 use bytes::Bytes;
 use chrono::Timelike;
-use crossbeam::{queue::ArrayQueue, utils::Backoff};
+use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use rand::prelude::Distribution;
@@ -37,6 +37,10 @@ use crate::{shutdown::Shutdown, storage::bitcask::config::MergePolicy};
 /// Error returned by Bitcask
 #[derive(Error, Debug)]
 pub enum Error {
+    /// Error from operating on a closed storage
+    #[error("Storage has been closed")]
+    Closed,
+
     /// Error from I/O operations.
     #[error("I/O error - {0}")]
     Io(#[from] io::Error),
@@ -103,6 +107,9 @@ struct Context {
 
     /// Counts of different metrics about the storage.
     stats: DashMap<u64, LogStatistics>,
+
+    /// Mark whether the storage has been closed
+    closed: AtomicCell<bool>,
 }
 
 /// The writer appends log entries to data files and ensures that indices in KeyDir point to a valid
@@ -149,6 +156,7 @@ impl Bitcask {
             conf,
             keydir,
             stats,
+            closed: AtomicCell::new(false),
         });
 
         // In case the user given 0, we still create a reader
@@ -209,6 +217,12 @@ impl Bitcask {
     }
 }
 
+impl Drop for Bitcask {
+    fn drop(&mut self) {
+        self.handle.close();
+    }
+}
+
 impl KeyValueStorage for Handle {
     type Error = Error;
 
@@ -227,14 +241,23 @@ impl KeyValueStorage for Handle {
 
 impl Handle {
     fn put(&self, key: Bytes, value: Bytes) -> Result<(), Error> {
+        if self.ctx.closed.load() {
+            return Err(Error::Closed);
+        }
         self.writer.lock().put(key, value)
     }
 
     fn delete(&self, key: Bytes) -> Result<bool, Error> {
+        if self.ctx.closed.load() {
+            return Err(Error::Closed);
+        }
         self.writer.lock().delete(key)
     }
 
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
+        if self.ctx.closed.load() {
+            return Err(Error::Closed);
+        }
         let backoff = Backoff::new();
         loop {
             if let Some(reader) = self.readers.pop() {
@@ -250,11 +273,21 @@ impl Handle {
     }
 
     fn merge(&self) -> Result<(), Error> {
+        if self.ctx.closed.load() {
+            return Err(Error::Closed);
+        }
         self.writer.lock().merge()
     }
 
     fn sync(&self) -> Result<(), Error> {
+        if self.ctx.closed.load() {
+            return Err(Error::Closed);
+        }
         self.writer.lock().sync()
+    }
+
+    fn close(&self) {
+        self.ctx.closed.store(true)
     }
 }
 
