@@ -15,17 +15,11 @@ pub async fn main() -> Result<(), anyhow::Error> {
     let subscriber = get_subscriber("opald".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);
 
-    let conf = Configuration::get();
-
-    // Bind a TCP listener
-    let listener = TcpListener::bind(&format!("{}:{}", conf.server.host, conf.server.port)).await?;
-
-    // Create storage
+    let conf = Configuration::get()?;
     fs::create_dir_all(&conf.bitcask.path)?;
     let storage = conf.bitcask.open()?;
-
+    let listener = TcpListener::bind(&format!("{}:{}", conf.server.host, conf.server.port)).await?;
     let server = Server::new(listener, storage.get_handle(), signal::ctrl_c());
     server.run().await;
-
     Ok(())
 }
