@@ -1,6 +1,9 @@
 # Configuration the address on which the server listens
-server.host = "0.0.0.0"
-server.port = 6379
+net.host = "0.0.0.0"
+net.port = 6379
+net.min_backoff_ms = 500
+net.max_backoff_ms = 64000
+net.max_connections = 128
 
 # Bitcask directory path
 bitcask.path = "db"

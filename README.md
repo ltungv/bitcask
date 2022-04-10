@@ -56,11 +56,15 @@ SUBCOMMANDS:
 To change the server settings, a configuration file is used. By default, the server will try to read the configuration file located at the directory where the server is run. Alternatively, a custom path to the configuration file can be given through the CLI upon startup. An example of the configuration file is given in [opal.toml](opal.toml).
 
 ```toml
-server.host = "0.0.0.0"
-server.port = 6379
+net.host = "0.0.0.0"
+net.port = 6379
+net.min_backoff_ms = 500
+net.max_backoff_ms = 64000
+net.max_connections = 128
 
 bitcask.path = "db"
 bitcask.concurrency = 4
+bitcask.readers_cache_size = 256
 bitcask.max_file_size = 2000000000
 bitcask.sync = "none"
 
@@ -76,4 +80,4 @@ bitcask.merge.thresholds.dead_bytes = 128000000
 bitcask.merge.thresholds.small_file = 10000000
 ```
 
-Additionally, we can use environment variables to override the server settings. Environment variables that change the settings are prefixed with `OPAL`, and the prefix along with nested fields are separated with double underscores `__`. For example, `OPAL__SERVER__HOST=127.0.0.1` will change to host address to `127.0.0.1`, and `OPAL__BITCASK__MAX_FILE_SIZE=2` will change Bitcask's max file size to `2`.
+Additionally, we can use environment variables to override the server settings. Environment variables that change the settings are prefixed with `OPAL`, and the prefix along with nested fields are separated with double underscores `__`. For example, `OPAL__NET__HOST=127.0.0.1` will change to host address to `127.0.0.1`, and `OPAL__BITCASK__MAX_FILE_SIZE=2` will change Bitcask's max file size to `2`.

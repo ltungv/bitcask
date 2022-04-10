@@ -12,13 +12,6 @@ use tracing::{debug, error, info};
 use super::{command::Command, connection::Connection};
 use crate::{shutdown::Shutdown, storage::KeyValueStorage};
 
-/// Max number of concurrent connections that can be served by the server.
-const MAX_CONNECTIONS: usize = 128;
-
-/// Max number of seconds to wait for when retrying to accept a new connection.
-/// The value is in second.
-const MAX_BACKOFF: u64 = 64;
-
 /// Provide methods and hold states for a Redis server. The server will exist when `shutdown`
 /// finishes, or when there's an error.
 pub struct Server<KV, S> {
@@ -34,6 +27,12 @@ struct Listener<KV> {
 
     // The TCP socket for listening for inbound connection
     listener: TcpListener,
+
+    /// Min number of milliseconds to wait for when retrying to accept a new connection.
+    min_backoff_ms: u64,
+
+    /// Max number of milliseconds to wait for when retrying to accept a new connection.
+    max_backoff_ms: u64,
 
     // Semaphore with `MAX_CONNECTIONS`.
     //
@@ -85,7 +84,8 @@ struct Handler<KV> {
 
 impl<KV, S> Server<KV, S> {
     /// Runs the server.
-    pub fn new(listener: TcpListener, storage: KV, shutdown: S) -> Self {
+    pub async fn new(storage: KV, shutdown: S, conf: super::Config) -> Result<Self, super::Error> {
+        info!(?conf, "starting server");
         // Ignoring the broadcast received because one can be created by
         // calling `subscribe()` on the `Sender`
         let (notify_shutdown, _) = broadcast::channel(1);
@@ -93,14 +93,16 @@ impl<KV, S> Server<KV, S> {
 
         let listener = Listener {
             storage,
-            listener,
-            limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            listener: TcpListener::bind(&format!("{}:{}", conf.host, conf.port)).await?,
+            min_backoff_ms: conf.min_backoff_ms,
+            max_backoff_ms: conf.max_backoff_ms,
+            limit_connections: Arc::new(Semaphore::new(conf.max_connections)),
             notify_shutdown,
             shutdown_complete_rx,
             shutdown_complete_tx,
         };
 
-        Self { listener, shutdown }
+        Ok(Self { listener, shutdown })
     }
 }
 
@@ -154,19 +156,19 @@ impl<KV> Listener<KV> {
     ///
     /// [`TcpStream`]: tokio::net::TcpStream
     async fn accept(&mut self) -> Result<TcpStream, super::Error> {
-        let mut backoff = 1;
+        let mut backoff = self.min_backoff_ms;
         loop {
             match self.listener.accept().await {
                 Ok((socket, _)) => return Ok(socket),
                 Err(err) => {
-                    if backoff > MAX_BACKOFF {
+                    if backoff > self.max_backoff_ms {
                         return Err(err.into());
                     }
                 }
             }
 
-            // Wait for `backoff` seconds
-            time::sleep(Duration::from_secs(backoff)).await;
+            // Wait for `backoff` milliseconds
+            time::sleep(Duration::from_millis(backoff)).await;
 
             // Doubling the backoff time
             backoff <<= 1;
