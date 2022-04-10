@@ -1,0 +1,60 @@
+# Configuration the address on which the server listens
+server.host = "0.0.0.0"
+server.port = 6379
+
+# Bitcask directory path
+bitcask.path = "db"
+# Bitcask number of concurrent readers
+bitcask.concurrency = 4
+# Bitcask maximum allowed file size
+bitcask.max_file_size = 2000000000
+
+# Bitcask disk sync strategy (choose one)
+################################
+# disk sync is handled by the OS
+################################
+bitcask.sync = "none"
+##########################################
+# always force a sync after write
+##########################################
+#bitcask.sync = "always"
+###########################################################################
+# specify the interval in milliseconds in which sync is periodically called
+###########################################################################
+#bitcask.sync.interval_ms = 500
+
+# Bitcask merge policy (choose one)
+########################################
+# always merge data files when triggered
+########################################
+bitcask.merge.policy = "always"
+########################
+# never merge data files
+########################
+#bitcask.merge.policy = "never"
+###########################################################################
+# only merge data files when triggered within the specifed time window
+# this example configure merge to happen within 00:00:00 AM and 07:59:59 AM
+###########################################################################
+#bitcask.merge.policy.window.start = 0
+#bitcask.merge.policy.window.end = 7
+
+# Interval in which merge conditions are checked
+bitcask.merge.check_interval_ms = 180000
+# Jitter add/subtract a random fraction of the interval from itself
+# so merges happen at irregular time intervals
+bitcask.merge.check_jitter = 0.3
+
+# The minimum fragmentation (fraction of dead keys to total keys) of a file
+# that triggers a merge
+bitcask.merge.triggers.fragmentation = 0.6
+# The minimum number of dead bytes in a file that triggers a merge
+bitcask.merge.triggers.dead_bytes = 512000000
+
+# The minimum fragmentation (fraction of dead keys to total keys) of a file
+# that causes it to be merged
+bitcask.merge.thresholds.fragmentation = 0.4
+# The minimum number of dead bytes in a file that causes it to be merged
+bitcask.merge.thresholds.dead_bytes = 128000000
+# The minimum size of a file that causes it to be excluded from a merge
+bitcask.merge.thresholds.small_file = 10000000
