@@ -76,4 +76,4 @@ bitcask.merge.thresholds.dead_bytes = 128
 bitcask.merge.thresholds.small_file = 10000000
 ```
 
-Additionally, we can use environment variables to override the server settings. Environment variables that change the settings are prefixed with "OPAL", followed by an underscore "_", then the field name. Nested fields are separated with a double underscore "__". For example, "OPAL_SERVER__HOST=127.0.0.1" will change to host address to "127.0.0.1".
+Additionally, we can use environment variables to override the server settings. Environment variables that change the settings are prefixed with `OPAL`, and the prefix along with nested fields are separated with double underscores `__`. For example, `OPAL__SERVER__HOST=127.0.0.1` will change to host address to `127.0.0.1`, and `OPAL__BITCASK__MAX_FILE_SIZE=2` will change Bitcask's max file size to `2`.

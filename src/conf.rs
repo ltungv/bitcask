@@ -35,7 +35,11 @@ impl Configuration {
     pub fn get(name: &str) -> Result<Self, config::ConfigError> {
         let conf = Config::builder()
             .add_source(config::File::with_name(name))
-            .add_source(config::Environment::with_prefix("OPAL").separator("__"))
+            .add_source(
+                config::Environment::with_prefix("OPAL")
+                    .prefix_separator("__")
+                    .separator("__"),
+            )
             .build()?;
         conf.try_deserialize()
     }
