@@ -32,10 +32,10 @@ impl Configuration {
     /// # Panics
     ///
     /// Panics if the configuration file is not valid
-    pub fn get() -> Result<Self, config::ConfigError> {
+    pub fn get(name: &str) -> Result<Self, config::ConfigError> {
         let conf = Config::builder()
-            .add_source(config::File::with_name("conf/base"))
-            .add_source(config::Environment::with_prefix("OPAL"))
+            .add_source(config::File::with_name(name))
+            .add_source(config::Environment::with_prefix("OPAL").separator("__"))
             .build()?;
         conf.try_deserialize()
     }
