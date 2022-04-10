@@ -387,21 +387,15 @@ impl Writer {
         key: Bytes,
         value: Option<Bytes>,
     ) -> Result<KeyDirEntry, Error> {
-        // Append log entry a create a KeyDir entry for it
+        // Append log entry
         let datafile_entry = DataFileEntry { tstamp, key, value };
         let index = self.writer.append(&datafile_entry)?;
-        let keydir_entry = KeyDirEntry {
-            fileid: self.active_fileid,
-            len: index.len,
-            pos: index.pos,
-            tstamp,
-        };
-        // Record number of bytes have been written to the active file
-        self.written_bytes += index.len;
-
+        // Sync immediately if the strategy is "always"
         if let SyncStrategy::Always = self.ctx.conf.sync {
             self.writer.sync()?;
         }
+        // Record number of bytes have been written to the active file
+        self.written_bytes += index.len;
 
         // NOTE: This explicit scope is used to control the lifetime of `stats` which we borrow
         // from `self`. `stats` has to be dropped before we make a call to `new_active_datafile`.
@@ -416,9 +410,9 @@ impl Writer {
                 stats.add_dead(index.len);
             }
             debug!(
-                entry_len = %keydir_entry.len,
-                entry_pos = %keydir_entry.pos,
-                active_fileid = %keydir_entry.fileid,
+                entry_len = %index.len,
+                entry_pos = %index.pos,
+                active_fileid = %self.active_fileid,
                 active_file_size = %self.written_bytes,
                 active_live_keys = %stats.live_keys,
                 active_dead_keys = %stats.dead_keys,
@@ -426,6 +420,13 @@ impl Writer {
                 "appended new log entry"
             );
         }
+
+        let keydir_entry = KeyDirEntry {
+            fileid: self.active_fileid,
+            len: index.len,
+            pos: index.pos,
+            tstamp,
+        };
 
         // Check if active file size exceeds the max limit. This must be done as the last step of
         // the writing process, otherwise we risk corrupting the storage states.
@@ -598,6 +599,8 @@ fn background_tasks(handle: Handle, notify_shutdown: broadcast::Sender<()>) -> R
         })
     };
 
+    // Drop unused handle
+    drop(handle);
     // We drop this early so there's only 1 channel Sender held by our bitcask instance
     drop(notify_shutdown);
     // Block until the async tasks finish
@@ -615,6 +618,7 @@ fn background_tasks(handle: Handle, notify_shutdown: broadcast::Sender<()>) -> R
 /// conditions are met.
 #[tracing::instrument(skip(handle, shutdown))]
 async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
+    // Return early so we don't have to run the task
     if let MergePolicy::Never = handle.ctx.conf.merge.policy {
         return Ok(());
     }
@@ -643,6 +647,7 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
 /// A periodic background task that forces disk synchronizations.
 #[tracing::instrument(skip(handle, shutdown))]
 async fn sync_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
+    // Only run task if we are requested to periodically sync
     if let SyncStrategy::IntervalMs(d) = handle.ctx.conf.sync {
         let interval = time::Duration::from_millis(d);
         while !shutdown.is_shutdown() {
