@@ -36,10 +36,8 @@ impl Shutdown {
     /// not been received.
     pub async fn recv(&mut self) {
         if !self.shutdown {
-            // `unwrap()` is Ok because we are making sure that only one shutdown
-            // signal will ever be sent. This block is executed only once, before
-            // the sender is dropped
-            self.notify.recv().await.unwrap();
+            // This block is executed only once when the sender is dropped
+            let _ = self.notify.recv().await;
             self.shutdown = true;
         }
     }
