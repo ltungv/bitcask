@@ -28,7 +28,7 @@ use tracing::{debug, error, info};
 
 pub use self::config::{Config, SyncStrategy};
 use self::{
-    log::{LogDir, LogIterator, LogWriter},
+    log::{LogDir, LogIterator, LogStatistics, LogWriter},
     utils::datafile_name,
 };
 use super::KeyValueStorage;
@@ -668,70 +668,6 @@ async fn sync_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), 
     Ok(())
 }
 
-#[derive(Debug)]
-struct KeyDirEntry {
-    fileid: u64,
-    len: u64,
-    pos: u64,
-    tstamp: i64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct HintFileEntry {
-    tstamp: i64,
-    len: u64,
-    pos: u64,
-    key: Bytes,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct DataFileEntry {
-    tstamp: i64,
-    key: Bytes,
-    value: Option<Bytes>,
-}
-
-/// Keeping track of the number of live/dead keys and how much space do the dead keys occupy.
-#[derive(Debug, Default)]
-struct LogStatistics {
-    live_keys: u64,
-    dead_keys: u64,
-    dead_bytes: u64,
-}
-
-impl LogStatistics {
-    /// Add a live key to the statistics.
-    fn add_live(&mut self) {
-        self.live_keys += 1;
-    }
-
-    /// Add a dead key to the statistics where `nbytes` is the size of the entry on disk.
-    fn add_dead(&mut self, nbytes: u64) {
-        self.dead_keys += 1;
-        self.dead_bytes += nbytes;
-    }
-
-    /// Turn a live key into a dead key where `nbytes` is the size of the entry on disk.
-    fn overwrite(&mut self, nbytes: u64) {
-        self.live_keys -= 1;
-        self.dead_keys += 1;
-        self.dead_bytes += nbytes;
-    }
-
-    /// Calculate the integer percentage of dead keys to total keys
-    fn fragmentation(&self) -> f64 {
-        // We avoid performing the calculation when there's no dead keys. This also helps avoiding
-        // a division by zero
-        if self.dead_keys == 0 {
-            0.0
-        } else {
-            let dead_keys = self.dead_keys as f64;
-            let live_keys = self.live_keys as f64;
-            dead_keys / (dead_keys + live_keys)
-        }
-    }
-}
-
 /// Read the given directory, rebuild the KeyDir, and gather statistics about the Bitcask instance
 /// at that directory.
 #[allow(clippy::type_complexity)]
@@ -851,6 +787,29 @@ where
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct KeyDirEntry {
+    fileid: u64,
+    len: u64,
+    pos: u64,
+    tstamp: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct HintFileEntry {
+    tstamp: i64,
+    len: u64,
+    pos: u64,
+    key: Bytes,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct DataFileEntry {
+    tstamp: i64,
+    key: Bytes,
+    value: Option<Bytes>,
 }
 
 #[cfg(test)]

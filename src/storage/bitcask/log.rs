@@ -20,6 +20,47 @@ pub struct LogIndex {
     pub pos: u64,
 }
 
+/// Keeping track of the number of live/dead keys and how much space do the dead keys occupy.
+#[derive(Debug, Default)]
+pub struct LogStatistics {
+    pub live_keys: u64,
+    pub dead_keys: u64,
+    pub dead_bytes: u64,
+}
+
+impl LogStatistics {
+    /// Add a live key to the statistics.
+    pub fn add_live(&mut self) {
+        self.live_keys += 1;
+    }
+
+    /// Add a dead key to the statistics where `nbytes` is the size of the entry on disk.
+    pub fn add_dead(&mut self, nbytes: u64) {
+        self.dead_keys += 1;
+        self.dead_bytes += nbytes;
+    }
+
+    /// Turn a live key into a dead key where `nbytes` is the size of the entry on disk.
+    pub fn overwrite(&mut self, nbytes: u64) {
+        self.live_keys -= 1;
+        self.dead_keys += 1;
+        self.dead_bytes += nbytes;
+    }
+
+    /// Calculate the integer percentage of dead keys to total keys
+    pub fn fragmentation(&self) -> f64 {
+        // We avoid performing the calculation when there's no dead keys. This also helps avoiding
+        // a division by zero
+        if self.dead_keys == 0 {
+            0.0
+        } else {
+            let dead_keys = self.dead_keys as f64;
+            let live_keys = self.live_keys as f64;
+            dead_keys / (dead_keys + live_keys)
+        }
+    }
+}
+
 /// A wrapper arround a LRU cache of log readers
 #[derive(Debug)]
 pub struct LogDir(LruCache<u64, LogReader>);
