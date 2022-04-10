@@ -294,23 +294,27 @@ impl Handle {
 impl Context {
     /// Return `true` if one of the merge trigger conditions is met.
     fn can_merge(&self) -> bool {
-        // Only merge when the current time is in the specified time window
-        if let MergePolicy::Window { start, end } = self.conf.merge.policy {
-            let now = chrono::Local::now().time();
-            let hour = now.hour();
-            if hour < start || hour > end {
-                return false;
+        match self.conf.merge.policy {
+            MergePolicy::Never => false,
+            ref policy => {
+                if let &MergePolicy::Window { start, end } = policy {
+                    let now = chrono::Local::now().time();
+                    let hour = now.hour();
+                    if hour < start || hour > end {
+                        return false;
+                    }
+                }
+                for entry in self.stats.iter() {
+                    // If any file met one of the trigger conditions, we'll try to merge
+                    if entry.dead_bytes > self.conf.merge.triggers.dead_bytes
+                        || entry.fragmentation() > self.conf.merge.triggers.fragmentation
+                    {
+                        return true;
+                    }
+                }
+                false
             }
         }
-        for entry in self.stats.iter() {
-            // If any file met one of the trigger conditions, we'll try to merge
-            if entry.dead_bytes > self.conf.merge.triggers.dead_bytes
-                || entry.fragmentation() > self.conf.merge.triggers.fragmentation
-            {
-                return true;
-            }
-        }
-        false
     }
 
     /// Return the set of file IDs that are included for merging.
