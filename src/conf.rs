@@ -1,10 +1,7 @@
 //! Configuration for the server binary
 
-use std::{io, net::IpAddr};
-
 use config::Config;
 use serde::Deserialize;
-use tokio::net::TcpListener;
 
 use super::storage::bitcask;
 
@@ -12,18 +9,9 @@ use super::storage::bitcask;
 #[derive(Deserialize)]
 pub struct Configuration {
     /// Server configuration.
-    pub server: ServerConfig,
+    pub net: crate::net::Config,
     /// Bitcask storage configuration.
     pub bitcask: bitcask::Config,
-}
-
-/// Server configuration
-#[derive(Deserialize)]
-pub struct ServerConfig {
-    /// The host address.
-    pub host: IpAddr,
-    /// The port number.
-    pub port: u16,
 }
 
 impl Configuration {
@@ -42,12 +30,5 @@ impl Configuration {
             )
             .build()?;
         conf.try_deserialize()
-    }
-}
-
-impl ServerConfig {
-    /// Bind to the TCP address given by the host and port.
-    pub async fn get_listener(&self) -> io::Result<TcpListener> {
-        TcpListener::bind(&format!("{}:{}", self.host, self.port)).await
     }
 }

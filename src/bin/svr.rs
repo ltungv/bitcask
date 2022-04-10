@@ -1,12 +1,10 @@
 use std::fs;
 
 use clap::Parser;
-use tokio::net::TcpListener;
 use tokio::signal;
 
 use opal::{
     conf::Configuration,
-    net::Server,
     telemetry::{get_subscriber, init_subscriber},
 };
 
@@ -30,9 +28,12 @@ pub async fn main() -> Result<(), anyhow::Error> {
     let conf = Configuration::get(&cli.config)?;
 
     fs::create_dir_all(&conf.bitcask.path)?;
+
     let storage = conf.bitcask.open()?;
-    let listener = TcpListener::bind(&format!("{}:{}", conf.server.host, conf.server.port)).await?;
-    let server = Server::new(listener, storage.get_handle(), signal::ctrl_c());
+    let server = conf
+        .net
+        .async_server(storage.get_handle(), signal::ctrl_c())
+        .await?;
     server.run().await;
     Ok(())
 }
