@@ -534,7 +534,8 @@ impl Writer {
         Ok(())
     }
 
-    /// Get the handle to the storage
+    /// Synchronize data to disk. This tells the operating system to flush its internal buffer to
+    /// ensure that data is actually persisted.
     pub fn sync(&mut self) -> Result<(), Error> {
         self.writer.sync()?;
         Ok(())
@@ -595,8 +596,7 @@ fn background_tasks(handle: Handle, notify_shutdown: broadcast::Sender<()>) -> R
 
     // We drop this early so there's only 1 channel Sender held by our bitcask instance
     drop(notify_shutdown);
-    // Block until we receive something on the shutdown_complete channel, which is when
-    // all Senders have been dropped.
+    // Block until the async tasks finish
     let (r1, r2) = rt.block_on(async { join!(merge_join_handle, sync_join_handle) });
     if let Err(e) = r1 {
         error!(cause=?e, "merge error");
