@@ -2,11 +2,12 @@
 
 `opal` is a simple key-value store that uses [Bitcask](https://riak.com/assets/bitcask-intro.pdf) as the storage engine and Redis Serialization Protocol ([RESP](https://redis.io/docs/reference/protocol-spec/)) as the network protocol.
 
-## Supported Redis commands
+## Features
 
-+ [GET](https://redis.io/commands/get/)
-+ [SET](https://redis.io/commands/set/)
-+ [DEL](https://redis.io/commands/del/)
++ Redis-compatible server and client
++ Lock-free concurrent reads
++ Asynchronous data compaction
++ Asynchronous disk synchronization
 
 ## Usages
 
@@ -81,3 +82,9 @@ bitcask.merge.thresholds.small_file = 10000000
 ```
 
 Additionally, we can use environment variables to override the server settings. Environment variables that change the settings are prefixed with `OPAL`, and the prefix along with nested fields are separated with double underscores `__`. For example, `OPAL__NET__HOST=127.0.0.1` will change to host address to `127.0.0.1`, and `OPAL__BITCASK__MAX_FILE_SIZE=2` will change Bitcask's max file size to `2`.
+
+## Supported Redis commands
+
++ [GET](https://redis.io/commands/get/)
++ [SET](https://redis.io/commands/set/)
++ [DEL](https://redis.io/commands/del/)
