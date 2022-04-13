@@ -1,14 +1,14 @@
 # Configuration the address on which the server listens
 net.host = "0.0.0.0"
 net.port = 6379
-net.min_backoff_ms = 500
+net.min_backoff_ms = 125
 net.max_backoff_ms = 64000
-net.max_connections = 128
+net.max_connections = 1024
 
 # Bitcask directory path
 bitcask.path = "db"
 # Bitcask number of concurrent readers
-bitcask.concurrency = 4
+bitcask.concurrency = 8
 # Bitcask readers cache size used by the writer and each of the readers
 bitcask.readers_cache_size = 256
 # Bitcask maximum allowed file size

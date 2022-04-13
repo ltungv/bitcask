@@ -1,5 +1,5 @@
 [package]
-name = "opal"
+name = "bitcask"
 version = "0.1.0"
 authors = ["Vo Le Tung <15053897+letung3105@users.noreply.github.com>"]
 edition = "2021"

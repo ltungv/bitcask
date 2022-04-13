@@ -2,7 +2,7 @@ use bytes::Bytes;
 use criterion::black_box;
 use sled::IVec;
 
-use opal::storage::{bitcask, KeyValueStorage};
+use bitcask::storage::{bitcask, KeyValueStorage};
 use rand::{
     distributions::{Standard, Uniform},
     prelude::*,

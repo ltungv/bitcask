@@ -1,12 +1,12 @@
 mod common;
 
+use bitcask::storage::KeyValueStorage;
 use common::{
     concurrent_read_bulk_bench_iter, concurrent_write_bulk_bench_iter,
     concurrent_write_bulk_bench_iter_no_tempdir, get_bitcask, get_threadpool, rand_kv_pairs,
     sequential_read_bulk_bench_iter, sequential_write_bulk_bench_iter,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use opal::storage::KeyValueStorage;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::prelude::*;
 

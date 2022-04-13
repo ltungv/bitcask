@@ -18,7 +18,7 @@ pub struct Shutdown {
 impl Shutdown {
     /// Returns a new [`Shutdown`] with the given [`broadcast::Receiver`].
     ///
-    /// [`Shutdown`]: opal::net::Shutdown
+    /// [`Shutdown`]: bitcask::net::Shutdown
     /// [`broadcast::Receiver`]: tokio::sync::broadcast::Receiver
     pub fn new(notify: broadcast::Receiver<()>) -> Self {
         Self {

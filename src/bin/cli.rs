@@ -2,14 +2,14 @@ use std::net::Ipv4Addr;
 
 use clap::{Parser, Subcommand};
 
-use opal::{
+use bitcask::{
     net::Client,
     telemetry::{get_subscriber, init_subscriber},
 };
 
 /// A minimal Redis client.
 #[derive(Parser)]
-#[clap(name = "opal", version, author, long_about = None)]
+#[clap(name = "bitcask", version, author, long_about = None)]
 struct Cli {
     #[clap(subcommand)]
     cmd: Commands,
@@ -49,7 +49,7 @@ enum Commands {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), anyhow::Error> {
     // Setup global `tracing` subscriber
-    let subscriber = get_subscriber("opal".into(), "info".into(), std::io::stdout);
+    let subscriber = get_subscriber("bitcask".into(), "info".into(), std::io::stdout);
     init_subscriber(subscriber);
 
     let cli = Cli::parse();

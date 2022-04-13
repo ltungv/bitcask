@@ -2,9 +2,9 @@ mod common;
 
 use std::io::Cursor;
 
+use bitcask::net::{connection::Connection, frame::Frame};
 use bytes::{Buf, Bytes};
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use opal::net::{connection::Connection, frame::Frame};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::{distributions::Alphanumeric, prelude::*};
 use tokio::runtime::Runtime;

@@ -11,7 +11,7 @@ pub struct Configuration {
     /// Server configuration.
     pub net: crate::net::Config,
     /// Bitcask storage configuration.
-    pub bitcask: bitcask::Config,
+    pub storage: bitcask::Config,
 }
 
 impl Configuration {
@@ -24,7 +24,7 @@ impl Configuration {
         let conf = Config::builder()
             .add_source(config::File::with_name(name))
             .add_source(
-                config::Environment::with_prefix("OPAL")
+                config::Environment::with_prefix("BITCASK")
                     .prefix_separator("__")
                     .separator("__"),
             )
