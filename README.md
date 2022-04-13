@@ -21,14 +21,13 @@ $ cd bitcask && cargo build --release
 Get the server help message.
 
 ```bash
+$ ./target/release/svr --help
+
 USAGE:
     svr [OPTIONS]
 
 OPTIONS:
-    -c, --config <CONFIG>    Path to the configuration file with the extension omitted.
-                             Configuration can be given using different file format and the
-                             application will derive the extension from the file stem [default:
-                             config]
+    -c, --config <CONFIG>    Path to the configuration file without the extension [default: config]
     -h, --help               Print help information
     -V, --version            Print version information
 ```
@@ -36,6 +35,8 @@ OPTIONS:
 Get the client help message.
 
 ```bash
+$ ./target/release/cli --help
+
 USAGE:
     cli [OPTIONS] <SUBCOMMAND>
 

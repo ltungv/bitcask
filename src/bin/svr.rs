@@ -12,8 +12,7 @@ use bitcask::{
 #[derive(Parser)]
 #[clap(name = "bitcaskd", version, author, long_about = None)]
 struct Cli {
-    /// Path to the configuration file with the extension omitted. Configuration can be given using
-    /// different file format and the application will derive the extension from the file stem.
+    /// Path to the configuration file without the extension.
     #[clap(short, long, default_value = "config")]
     config: String,
 }
