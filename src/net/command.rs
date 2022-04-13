@@ -30,7 +30,7 @@ pub enum Error {
 
     /// Could not parse utf8 string
     #[error("Could not parse bytes as an UTF-8 string - {0}")]
-    NotUtf8(#[from] std::string::FromUtf8Error),
+    NotUtf8(#[from] std::str::Utf8Error),
 }
 
 /// Enumeration of all the supported Redis commands. Each commands
@@ -104,10 +104,10 @@ impl Parser {
     ///
     /// Returns a string if the next value can be represented as string.
     /// Otherwise returns an error. Returns `None` if there's no value left.
-    fn get_string(&mut self) -> Result<Option<String>, Error> {
+    fn get_string(&mut self) -> Result<Option<Utf8Bytes>, Error> {
         match self.frames.next() {
             Some(Frame::BulkString(s)) => {
-                let s = String::from_utf8(s.to_vec())?;
+                let s = Utf8Bytes::try_from(s)?;
                 Ok(Some(s))
             }
             Some(f) => Err(Error::BadFrame(f)),
@@ -176,6 +176,46 @@ impl TryFrom<Parser> for Set {
             return Err(Error::BadArguments("Frame contains extra data"));
         }
         Ok(Self::new(key, value))
+    }
+}
+
+/// A wrapper around [`bytes::Bytes`] that check if the underlying bytes represent a UTF8-encoded
+/// string. We use this to provide checks for UTF8 without having to copy from Bytes to String.
+///
+/// [`bytes::Bytes`]: bytes::Bytes
+#[derive(Debug, PartialEq, Eq)]
+pub struct Utf8Bytes(bytes::Bytes);
+
+impl AsRef<Bytes> for Utf8Bytes {
+    fn as_ref(&self) -> &Bytes {
+        &self.0
+    }
+}
+
+impl AsMut<Bytes> for Utf8Bytes {
+    fn as_mut(&mut self) -> &mut Bytes {
+        &mut self.0
+    }
+}
+
+impl From<&str> for Utf8Bytes {
+    fn from(value: &str) -> Self {
+        Self(Bytes::from(value.to_string()))
+    }
+}
+
+impl From<String> for Utf8Bytes {
+    fn from(value: String) -> Self {
+        Self(Bytes::from(value))
+    }
+}
+
+impl TryFrom<Bytes> for Utf8Bytes {
+    type Error = Error;
+
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        std::str::from_utf8(&value)?;
+        Ok(Self(value))
     }
 }
 

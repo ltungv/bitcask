@@ -3,7 +3,7 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::debug;
 
 use super::{
-    command::{self, Del, Get, Set},
+    command::{self, Del, Get, Set, Utf8Bytes},
     connection::Connection,
     frame::Frame,
 };
@@ -38,7 +38,7 @@ impl Client {
     #[tracing::instrument(skip(self))]
     pub async fn del(&mut self, keys: Vec<String>) -> Result<i64, super::Error> {
         // already checked for non-empty slice with the if-condition
-        let cmd = Del::new(keys);
+        let cmd = Del::new(keys.into_iter().map(Utf8Bytes::from).collect());
         let frame: Frame = cmd.into();
         debug!(request = ?frame);
 
@@ -56,7 +56,7 @@ impl Client {
     /// Returns `None` if the key does not exist.
     #[tracing::instrument(skip(self))]
     pub async fn get(&mut self, key: String) -> Result<Option<Bytes>, super::Error> {
-        let cmd = Get::new(key);
+        let cmd = Get::new(key.into());
         let frame: Frame = cmd.into();
         debug!(request = ?frame);
 
@@ -84,7 +84,7 @@ impl Client {
     /// - (unsupported) GET -- Return the old string stored at key, or nil if key did not exist. An error is returned and SET aborted if the value stored at key is not a string.
     #[tracing::instrument(skip(self))]
     pub async fn set(&mut self, key: String, value: Bytes) -> Result<(), super::Error> {
-        let cmd = Set::new(key, value);
+        let cmd = Set::new(key.into(), value);
         let frame: Frame = cmd.into();
         debug!(request = ?frame);
 

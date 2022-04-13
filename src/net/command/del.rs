@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use tracing::debug;
 
 use crate::{
@@ -6,17 +5,19 @@ use crate::{
     storage::KeyValueStorage,
 };
 
+use super::Utf8Bytes;
+
 /// Arguments for DEL command
 #[derive(Debug, PartialEq, Eq)]
 pub struct Del {
-    keys: Vec<String>,
+    keys: Vec<Utf8Bytes>,
 }
 
 impl Del {
     /// Creates a new set of arguments.
     ///
     /// DEL requires that the list of keys must have at least 1 element
-    pub fn new(keys: Vec<String>) -> Self {
+    pub fn new(keys: Vec<Utf8Bytes>) -> Self {
         Self { keys }
     }
 
@@ -32,7 +33,7 @@ impl Del {
         let count = tokio::task::spawn_blocking(move || {
             let mut count = 0;
             for key in self.keys {
-                match storage.del(Bytes::from(key)) {
+                match storage.del(key.as_ref().clone()) {
                     Ok(true) => count += 1,
                     Ok(false) => continue,
                     Err(e) => return Err(e),
@@ -57,7 +58,7 @@ impl From<Del> for Frame {
     fn from(cmd: Del) -> Self {
         let mut cmd_data = vec![Self::BulkString("DEL".into())];
         for key in cmd.keys {
-            cmd_data.push(Self::BulkString(Bytes::from(key)));
+            cmd_data.push(Self::BulkString(key.as_ref().clone()));
         }
         Self::Array(cmd_data)
     }

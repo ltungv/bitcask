@@ -6,18 +6,20 @@ use crate::{
     storage::KeyValueStorage,
 };
 
+use super::Utf8Bytes;
+
 /// Arguments for SET command
 #[derive(Debug, PartialEq, Eq)]
 pub struct Set {
     /// The key to set a value to
-    key: String,
+    key: Utf8Bytes,
     /// The value to be set
     value: Bytes,
 }
 
 impl Set {
     /// Creates a new set of arguments
-    pub fn new(key: String, value: Bytes) -> Self {
+    pub fn new(key: Utf8Bytes, value: Bytes) -> Self {
         Self { key, value }
     }
 
@@ -30,7 +32,7 @@ impl Set {
         KV: KeyValueStorage,
     {
         // Set the key's value
-        tokio::task::spawn_blocking(move || storage.set(Bytes::from(self.key), self.value))
+        tokio::task::spawn_blocking(move || storage.set(self.key.as_ref().clone(), self.value))
             .await?
             .map_err(|e| net::Error::Storage(e.into()))?;
 
@@ -48,7 +50,7 @@ impl From<Set> for Frame {
     fn from(cmd: Set) -> Self {
         Self::Array(vec![
             Self::BulkString("SET".into()),
-            Self::BulkString(Bytes::from(cmd.key)),
+            Self::BulkString(cmd.key.as_ref().clone()),
             Self::BulkString(cmd.value),
         ])
     }
