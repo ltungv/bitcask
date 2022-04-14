@@ -47,7 +47,7 @@ impl LogStatistics {
         self.dead_bytes += nbytes;
     }
 
-    /// Calculate the integer percentage of dead keys to total keys
+    /// Calculate the fraction of dead keys to total keys
     pub fn fragmentation(&self) -> f64 {
         // We avoid performing the calculation when there's no dead keys. This also helps avoiding
         // a division by zero
@@ -77,6 +77,9 @@ impl LogDir {
     where
         P: AsRef<Path>,
     {
+        // TODO: This could use Entry APIs to reduce the number of hashes done on `fileid`.
+        // Currently, the crate `lru` does not have support for the Entry API, thus we need
+        // 2 hashes to get an existing key and 3 hashes to get a new key.
         if !self.0.contains(&fileid) {
             let file = open(utils::datafile_name(&path, fileid))?;
             let reader = LogReader::new(file)?;
