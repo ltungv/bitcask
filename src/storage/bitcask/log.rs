@@ -71,21 +71,51 @@ impl LogDir {
         Self(LruCache::new(size))
     }
 
-    /// Return the reader of the file with the given `fileid`. If there's no reader for the file
-    /// with the given `fileid`, create a new reader and return it.
-    pub fn get<P>(&mut self, path: P, fileid: u64) -> io::Result<&mut LogReader>
+    pub unsafe fn read<T, P>(
+        &mut self,
+        path: P,
+        fileid: u64,
+        len: u64,
+        pos: u64,
+    ) -> bincode::Result<T>
     where
+        T: DeserializeOwned,
         P: AsRef<Path>,
     {
-        // TODO: This could use Entry APIs to reduce the number of hashes done on `fileid`.
-        // Currently, the crate `lru` does not have support for the Entry API, thus we need
-        // 2 hashes to get an existing key and 3 hashes to get a new key.
-        if !self.0.contains(&fileid) {
-            let file = open(utils::datafile_name(&path, fileid))?;
-            let reader = LogReader::new(file)?;
-            self.0.put(fileid, reader);
+        match self.0.get_mut(&fileid) {
+            Some(reader) => reader.at::<T>(len, pos),
+            None => {
+                let file = open(utils::datafile_name(&path, fileid))?;
+                let mut reader = LogReader::new(file)?;
+                let result = reader.at::<T>(len, pos);
+                self.0.put(fileid, reader);
+                result
+            }
         }
-        Ok(self.0.get_mut(&fileid).expect("unreachable error"))
+    }
+
+    pub unsafe fn copy<P, W>(
+        &mut self,
+        path: P,
+        fileid: u64,
+        len: u64,
+        pos: u64,
+        writer: &mut W
+    ) -> io::Result<u64>
+    where
+        P: AsRef<Path>,
+        W: Write
+    {
+        match self.0.get_mut(&fileid) {
+            Some(reader) => reader.copy_raw(len, pos, writer),
+            None => {
+                let file = open(utils::datafile_name(&path, fileid))?;
+                let mut reader = LogReader::new(file)?;
+                let result = reader.copy_raw(len, pos, writer);
+                self.0.put(fileid, reader);
+                result
+            }
+        }
     }
 }
 

@@ -470,7 +470,9 @@ impl Writer {
                 // KeyDir are written disk, thus the readers can savely use memmap to
                 // access the data file randomly.
                 let nbytes = unsafe {
-                    readers.get(path, keydir_entry.fileid)?.copy_raw(
+                    readers.copy(
+                        path,
+                        keydir_entry.fileid,
                         keydir_entry.len,
                         keydir_entry.pos,
                         &mut merge_datafile_writer,
@@ -561,10 +563,12 @@ impl Reader {
                 // valid data file positions. Thus we can be confident that the Mmap won't be
                 // mapped to an invalid segment.
                 let datafile_entry = unsafe {
-                    self.readers
-                        .borrow_mut()
-                        .get(self.ctx.conf.path.as_path(), keydir_entry.fileid)?
-                        .at::<DataFileEntry>(keydir_entry.len, keydir_entry.pos)?
+                    self.readers.borrow_mut().read::<DataFileEntry, _>(
+                        &self.ctx.conf.path,
+                        keydir_entry.fileid,
+                        keydir_entry.len,
+                        keydir_entry.pos,
+                    )?
                 };
 
                 Ok(datafile_entry.value)
