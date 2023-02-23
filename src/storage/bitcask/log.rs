@@ -1,7 +1,8 @@
 use std::{
     fs,
     io::{self, Write},
-    path::Path, num::NonZeroUsize,
+    num::NonZeroUsize,
+    path::Path,
 };
 
 use bytes::Buf;
@@ -10,7 +11,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use super::{
     bufio::{BufReaderWithPos, BufWriterWithPos},
-    utils,
+    utils, Error,
 };
 
 /// Position and length of an log entry within a log file.
@@ -77,7 +78,7 @@ impl LogDir {
         fileid: u64,
         len: u64,
         pos: u64,
-    ) -> bincode::Result<T>
+    ) -> Result<T, Error>
     where
         T: DeserializeOwned,
         P: AsRef<Path>,
@@ -131,7 +132,7 @@ impl LogWriter {
     }
 
     /// Serialize the given entry at EOF and ensure to flush all data to the I/O device.
-    pub fn append<T>(&mut self, entry: &T) -> bincode::Result<LogIndex>
+    pub fn append<T>(&mut self, entry: &T) -> Result<LogIndex, Error>
     where
         T: Serialize,
     {
@@ -172,7 +173,7 @@ impl LogReader {
     /// # Safety
     ///
     /// The caller must ensure that the file segment given by `len` and `pos` is valid.
-    pub unsafe fn at<T>(&mut self, len: u64, pos: u64) -> bincode::Result<T>
+    pub unsafe fn at<T>(&mut self, len: u64, pos: u64) -> Result<T, Error>
     where
         T: DeserializeOwned,
     {
@@ -183,7 +184,7 @@ impl LogReader {
         }
         let start = pos as usize;
         let end = start + len as usize;
-        bincode::deserialize(&self.mmap[(start..end)])
+        Ok(bincode::deserialize(&self.mmap[(start..end)])?)
     }
 
     /// Copy the raw data at the given position into the writer at `dst` by mapping the file segment
@@ -219,7 +220,7 @@ impl LogIterator {
     }
 
     /// Return the entry at the current reader position.
-    pub fn next<T>(&mut self) -> bincode::Result<Option<(LogIndex, T)>>
+    pub fn next<T>(&mut self) -> Result<Option<(LogIndex, T)>, Error>
     where
         T: DeserializeOwned,
     {
@@ -234,9 +235,9 @@ impl LogIterator {
             Err(e) => match e.as_ref() {
                 bincode::ErrorKind::Io(ioe) => match ioe.kind() {
                     io::ErrorKind::UnexpectedEof => Ok(None), // stop iterating when EOF
-                    _ => Err(e),
+                    _ => Err(e.into()),
                 },
-                _ => Err(e),
+                _ => Err(e.into()),
             },
         }
     }

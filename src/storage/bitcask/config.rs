@@ -5,7 +5,7 @@ use std::{
 
 use serde::Deserialize;
 
-use super::Bitcask;
+use super::{Bitcask, Error};
 
 /// Configuration for a `Bitcask` instance. We try to mirror the configurations
 /// available in [Configuring Bitcask].
@@ -127,7 +127,7 @@ impl Default for MergeThresholds {
 
 impl Config {
     /// Create a `Bitcask` instance at the given path with the available options.
-    pub fn open(self) -> Result<Bitcask, super::Error> {
+    pub fn open(self) -> Result<Bitcask, Error> {
         Bitcask::open(self)
     }
 
