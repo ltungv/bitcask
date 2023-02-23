@@ -16,7 +16,7 @@ where
 {
     /// Create a new buffered reader.
     pub fn new(mut r: R) -> io::Result<Self> {
-        let pos = r.seek(SeekFrom::Current(0))?;
+        let pos = r.stream_position()?;
         let reader = BufReader::new(r);
         Ok(Self { pos, reader })
     }

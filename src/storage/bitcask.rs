@@ -853,8 +853,8 @@ mod tests {
             for i in 0..10000 {
                 handle
                     .put(
-                        Bytes::from(format!("key{}", i)),
-                        Bytes::from(format!("value{}", i)),
+                        Bytes::from(format!("key{i}")),
+                        Bytes::from(format!("value{i}")),
                     )
                     .unwrap();
             }
@@ -865,11 +865,8 @@ mod tests {
         let handle = kv.get_handle();
         // get 10000 different keys
         for i in 0..10000 {
-            let value = handle
-                .get(Bytes::from(format!("key{}", i)))
-                .unwrap()
-                .unwrap();
-            assert_eq!(Bytes::from(format!("value{}", i)), value);
+            let value = handle.get(Bytes::from(format!("key{i}"))).unwrap().unwrap();
+            assert_eq!(Bytes::from(format!("value{i}")), value);
         }
     }
 
@@ -890,8 +887,8 @@ mod tests {
             for i in 0..10000 {
                 handle
                     .put(
-                        Bytes::from(format!("key{}", i)),
-                        Bytes::from(format!("value{}", i)),
+                        Bytes::from(format!("key{i}")),
+                        Bytes::from(format!("value{i}")),
                     )
                     .unwrap();
             }
@@ -899,8 +896,8 @@ mod tests {
             for i in 0..5000 {
                 handle
                     .put(
-                        Bytes::from(format!("key{}", i)),
-                        Bytes::from(format!("value{}", i)),
+                        Bytes::from(format!("key{i}")),
+                        Bytes::from(format!("value{i}")),
                     )
                     .unwrap();
             }
@@ -935,8 +932,8 @@ mod tests {
         for i in 0..10000 {
             handle
                 .put(
-                    Bytes::from(format!("key{}", i)),
-                    Bytes::from(format!("value{}", i)),
+                    Bytes::from(format!("key{i}")),
+                    Bytes::from(format!("value{i}")),
                 )
                 .unwrap();
         }
@@ -954,8 +951,8 @@ mod tests {
         for i in 0..5000 {
             handle
                 .put(
-                    Bytes::from(format!("key{}", i)),
-                    Bytes::from(format!("value{}", i)),
+                    Bytes::from(format!("key{i}")),
+                    Bytes::from(format!("value{i}")),
                 )
                 .unwrap();
         }

@@ -100,11 +100,11 @@ impl LogDir {
         fileid: u64,
         len: u64,
         pos: u64,
-        writer: &mut W
+        writer: &mut W,
     ) -> io::Result<u64>
     where
         P: AsRef<Path>,
-        W: Write
+        W: Write,
     {
         match self.0.get_mut(&fileid) {
             Some(reader) => reader.copy_raw(len, pos, writer),
@@ -273,7 +273,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let fpath = dir.as_ref().join("test");
             // write the entry
-            let mut writer = LogWriter::new(create(&fpath).unwrap()).unwrap();
+            let mut writer = LogWriter::new(create(fpath).unwrap()).unwrap();
             let idx1 = writer.append(&buf).unwrap();
             let idx2 = writer.append(&buf).unwrap();
             // succeed if we received the correct index

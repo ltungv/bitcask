@@ -162,7 +162,7 @@ where
         let mut buf = [0u8; 20];
         let mut buf = Cursor::new(&mut buf[..]);
         // write the integer as string
-        write!(&mut buf, "{}", value)?;
+        write!(&mut buf, "{value}")?;
         let pos = buf.position() as usize;
         self.stream.write_all(&buf.get_ref()[..pos]).await?;
         Ok(())

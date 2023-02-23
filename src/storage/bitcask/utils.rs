@@ -15,7 +15,7 @@ where
     P: AsRef<Path>,
 {
     path.as_ref()
-        .join(format!("{}.bitcask.{}", fileid, DATAFILE_EXT))
+        .join(format!("{fileid}.bitcask.{DATAFILE_EXT}"))
 }
 
 /// Return the hint file name given its ID.
@@ -24,7 +24,7 @@ where
     P: AsRef<Path>,
 {
     path.as_ref()
-        .join(format!("{}.bitcask.{}", fileid, HINTFILE_EXT))
+        .join(format!("{fileid}.bitcask.{HINTFILE_EXT}"))
 }
 
 /// Returns a list of sorted file IDs by parsing the data file names in the directory.
