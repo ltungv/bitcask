@@ -159,13 +159,7 @@ impl Bitcask {
             closed: AtomicCell::new(false),
         });
 
-        // In case the user given 0, we still create a reader
-        let readers = if ctx.conf.concurrency > 0 {
-            Arc::new(ArrayQueue::new(ctx.conf.concurrency))
-        } else {
-            Arc::new(ArrayQueue::new(ctx.conf.concurrency + 1))
-        };
-
+        let readers = Arc::new(ArrayQueue::new(ctx.conf.concurrency.get()));
         for _ in 0..readers.capacity() {
             readers
                 .push(Reader {
@@ -430,7 +424,7 @@ impl Writer {
 
         // Check if active file size exceeds the max limit. This must be done as the last step of
         // the writing process, otherwise we risk corrupting the storage states.
-        if self.written_bytes > self.ctx.conf.max_file_size {
+        if self.written_bytes > self.ctx.conf.max_file_size.get() {
             self.new_active_datafile(self.active_fileid + 1)?;
         }
         Ok(keydir_entry)
@@ -498,7 +492,7 @@ impl Writer {
 
                 // switch to new merge data file if we exceed the max file size
                 merge_pos += nbytes;
-                if merge_pos > self.ctx.conf.max_file_size {
+                if merge_pos > self.ctx.conf.max_file_size.get() {
                     merge_fileid += 1;
                     merge_pos = 0;
                     merge_datafile_writer =
@@ -818,6 +812,8 @@ struct DataFileEntry {
 
 #[cfg(test)]
 mod tests {
+    use std::num::{NonZeroU64, NonZeroUsize};
+
     use proptest::{collection, prelude::*};
 
     use super::*;
@@ -825,7 +821,10 @@ mod tests {
     #[test]
     fn bitcask_sequential_read_after_write_should_return_the_written_data() {
         let dir = tempfile::tempdir().unwrap();
-        let conf = Config::default().concurrency(1).path(dir.path()).to_owned();
+        let conf = Config::default()
+            .concurrency(NonZeroUsize::new(1).unwrap())
+            .path(dir.path())
+            .to_owned();
         let kv = conf.open().unwrap();
         let handle = kv.get_handle();
 
@@ -842,8 +841,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
-            .concurrency(1)
-            .max_file_size(64 * 1024)
+            .concurrency(NonZeroUsize::new(1).unwrap())
+            .max_file_size(NonZeroU64::new(64 * 1024).unwrap())
             .path(dir.path())
             .to_owned();
         {
@@ -875,8 +874,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
-            .concurrency(1)
-            .max_file_size(64 * 1024)
+            .concurrency(NonZeroUsize::new(1).unwrap())
+            .max_file_size(NonZeroU64::new(64 * 1024).unwrap())
             .path(dir.path())
             .to_owned();
 
@@ -922,8 +921,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // create lots of small files to test reading across different files
         let conf = Config::default()
-            .concurrency(1)
-            .max_file_size(64 * 1024)
+            .concurrency(NonZeroUsize::new(1).unwrap())
+            .max_file_size(NonZeroU64::new(64 * 1024).unwrap())
             .path(dir.path())
             .to_owned();
         let kv = conf.open().unwrap();

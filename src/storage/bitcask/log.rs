@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{self, Write},
-    path::Path,
+    path::Path, num::NonZeroUsize,
 };
 
 use bytes::Buf;
@@ -67,7 +67,7 @@ pub struct LogDir(LruCache<u64, LogReader>);
 
 impl LogDir {
     /// Create a new LRU readers cache with the specified size.
-    pub fn new(size: usize) -> Self {
+    pub fn new(size: NonZeroUsize) -> Self {
         Self(LruCache::new(size))
     }
 

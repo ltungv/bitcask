@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 
@@ -14,10 +17,10 @@ pub struct Config {
     /// Path to the storage data directory.
     pub path: PathBuf,
 
-    pub(super) concurrency: usize,
-    pub(super) readers_cache_size: usize,
+    pub(super) concurrency: NonZeroUsize,
+    pub(super) readers_cache_size: NonZeroUsize,
 
-    pub(super) max_file_size: u64,
+    pub(super) max_file_size: NonZeroU64,
     pub(super) sync: SyncStrategy,
     pub(super) merge: MergeStrategy,
 }
@@ -72,9 +75,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             path: std::env::current_dir().unwrap(),
-            concurrency: num_cpus::get(),
-            readers_cache_size: 256,
-            max_file_size: 2 * 1024 * 1024 * 1024,
+            concurrency: NonZeroUsize::new(num_cpus::get()).unwrap(),
+            readers_cache_size: NonZeroUsize::new(256).unwrap(),
+            max_file_size: NonZeroU64::new(2 * 1024 * 1024 * 1024).unwrap(),
             sync: SyncStrategy::default(),
             merge: MergeStrategy::default(),
         }
@@ -103,6 +106,7 @@ impl Default for MergePolicy {
         Self::Always
     }
 }
+
 impl Default for MergeTriggers {
     fn default() -> Self {
         Self {
@@ -137,20 +141,20 @@ impl Config {
     }
 
     /// Set the max number of concurrent readers. Default to the number of logical cores.
-    pub fn concurrency(&mut self, concurrency: usize) -> &mut Self {
+    pub fn concurrency(&mut self, concurrency: NonZeroUsize) -> &mut Self {
         self.concurrency = concurrency;
         self
     }
 
     /// Set the size of the readers cache used by the writer and each of the readers.
     /// Default to `256`
-    pub fn readers_cache_size(&mut self, readers_cache_size: usize) -> &mut Self {
+    pub fn readers_cache_size(&mut self, readers_cache_size: NonZeroUsize) -> &mut Self {
         self.readers_cache_size = readers_cache_size;
         self
     }
 
     /// Set the max file size in byte. Default to `2GiBs`.
-    pub fn max_file_size(&mut self, max_file_size: u64) -> &mut Self {
+    pub fn max_file_size(&mut self, max_file_size: NonZeroU64) -> &mut Self {
         self.max_file_size = max_file_size;
         self
     }

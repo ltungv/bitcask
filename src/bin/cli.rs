@@ -62,14 +62,14 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         Commands::Get { key } => match client.get(key).await? {
             Some(val) => match String::from_utf8(val.to_vec()) {
-                Ok(s) => println!("\"{}\"", s),
-                Err(_) => println!("{:?}", val),
+                Ok(s) => println!("\"{s}\""),
+                Err(_) => println!("{val:?}"),
             },
             None => println!("(nil)"),
         },
         Commands::Del { keys } => {
             let n_deleted = client.del(keys).await?;
-            println!("(integer) {}", n_deleted);
+            println!("(integer) {n_deleted}");
         }
     }
 

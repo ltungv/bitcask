@@ -3,6 +3,7 @@ name = "bitcask"
 version = "0.1.0"
 authors = ["Vo Le Tung <15053897+letung3105@users.noreply.github.com>"]
 edition = "2021"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,11 +12,11 @@ anyhow = "1"
 bincode = "1"
 bytes = { version = "1", features = ["serde"] }
 chrono = "0.4"
-clap = { version = "3", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 config = "0.13"
 crossbeam = "0.8"
 dashmap = "5"
-lru = "0.7"
+lru = "0.9"
 memmap2 = "0.5"
 num_cpus = "1"
 parking_lot = "0.12"
@@ -29,8 +30,8 @@ tracing-log = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry", "env-filter"] }
 
 [dev-dependencies]
-criterion = { version = "0.3", features = ["async_tokio"] }
-pprof = { version = "0.7", features = ["criterion", "flamegraph"] }
+criterion = { version = "0.4", features = ["async_tokio"] }
+pprof = { version = "0.11", features = ["criterion", "flamegraph"] }
 proptest = "1"
 rayon = "1"
 sled = "0.34"
