@@ -1,2 +1,5 @@
 /target
 .vscode/launch.json
+*.rdb
+*.data
+*.hint
