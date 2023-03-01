@@ -3,6 +3,7 @@ use std::{
     io::{self, Write},
     num::NonZeroUsize,
     path::Path,
+    sync::atomic::{self, AtomicU64},
 };
 
 use bytes::Buf;
@@ -24,41 +25,52 @@ pub struct LogIndex {
 /// Keeping track of the number of live/dead keys and how much space do the dead keys occupy.
 #[derive(Debug, Default)]
 pub struct LogStatistics {
-    pub live_keys: u64,
-    pub dead_keys: u64,
-    pub dead_bytes: u64,
+    live_keys: AtomicU64,
+    dead_keys: AtomicU64,
+    dead_bytes: AtomicU64,
 }
 
 impl LogStatistics {
     /// Add a live key to the statistics.
     pub fn add_live(&mut self) {
-        self.live_keys += 1;
+        self.live_keys.fetch_add(1, atomic::Ordering::AcqRel);
     }
 
     /// Add a dead key to the statistics where `nbytes` is the size of the entry on disk.
     pub fn add_dead(&mut self, nbytes: u64) {
-        self.dead_keys += 1;
-        self.dead_bytes += nbytes;
+        self.dead_keys.fetch_add(1, atomic::Ordering::AcqRel);
+        self.dead_bytes.fetch_add(nbytes, atomic::Ordering::AcqRel);
     }
 
-    /// Turn a live key into a dead key where `nbytes` is the size of the entry on disk.
     pub fn overwrite(&mut self, nbytes: u64) {
-        self.live_keys -= 1;
-        self.dead_keys += 1;
-        self.dead_bytes += nbytes;
+        self.live_keys.fetch_sub(1, atomic::Ordering::AcqRel);
+        self.dead_keys.fetch_add(1, atomic::Ordering::AcqRel);
+        self.dead_bytes.fetch_add(nbytes, atomic::Ordering::AcqRel);
+    }
+
+    pub fn live_keys(&self) -> u64 {
+        self.live_keys.load(atomic::Ordering::Acquire)
+    }
+
+    pub fn dead_keys(&self) -> u64 {
+        self.dead_keys.load(atomic::Ordering::Acquire)
+    }
+
+    pub fn dead_bytes(&self) -> u64 {
+        self.dead_bytes.load(atomic::Ordering::Acquire)
     }
 
     /// Calculate the fraction of dead keys to total keys
     pub fn fragmentation(&self) -> f64 {
         // We avoid performing the calculation when there's no dead keys. This also helps avoiding
         // a division by zero
-        if self.dead_keys == 0 {
-            0.0
-        } else {
-            let dead_keys = self.dead_keys as f64;
-            let live_keys = self.live_keys as f64;
-            dead_keys / (dead_keys + live_keys)
+        let live = self.live_keys();
+        let dead = self.dead_keys();
+        if dead == 0 {
+            return 0.0;
         }
+        let total = dead + live;
+        dead as f64 / total as f64
     }
 }
 

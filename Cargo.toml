@@ -7,6 +7,17 @@ license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "cli"
+bench = false
+
+[[bin]]
+name = "svr"
+bench = false
+
+[lib]
+bench = false
+
 [dependencies]
 anyhow = "1"
 bincode = "1"
@@ -38,13 +49,9 @@ sled = "0.34"
 tempfile = "3"
 
 [[bench]]
-name = "bitcask"
+name = "connection"
 harness = false
 
 [[bench]]
-name = "compare_engines"
-harness = false
-
-[[bench]]
-name = "net_frame"
+name = "readwrite"
 harness = false

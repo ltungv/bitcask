@@ -300,7 +300,7 @@ impl Context {
                 }
                 for entry in self.stats.iter() {
                     // If any file met one of the trigger conditions, we'll try to merge
-                    if entry.dead_bytes > self.conf.merge.triggers.dead_bytes
+                    if entry.dead_bytes() > self.conf.merge.triggers.dead_bytes
                         || entry.fragmentation() > self.conf.merge.triggers.fragmentation
                     {
                         return true;
@@ -321,7 +321,7 @@ impl Context {
             let fileid = *entry.key();
             let metadata = fs::metadata(datafile_name(&path, fileid))?;
             // Files that met one of the threshold conditions are included
-            if entry.dead_bytes > self.conf.merge.thresholds.dead_bytes
+            if entry.dead_bytes() > self.conf.merge.thresholds.dead_bytes
                 || entry.fragmentation() > self.conf.merge.thresholds.fragmentation
                 || metadata.len() < self.conf.merge.thresholds.small_file
             {
@@ -408,9 +408,9 @@ impl Writer {
                 entry_pos = %index.pos,
                 active_fileid = %self.active_fileid,
                 active_file_size = %self.written_bytes,
-                active_live_keys = %stats.live_keys,
-                active_dead_keys = %stats.dead_keys,
-                active_dead_bytes = %stats.dead_bytes,
+                active_live_keys = %stats.live_keys(),
+                active_dead_keys = %stats.dead_keys(),
+                active_dead_bytes = %stats.dead_bytes(),
                 "appended new log entry"
             );
         }
@@ -909,8 +909,8 @@ mod tests {
         let mut lives = 0;
         let mut deads = 0;
         for e in handle.ctx.stats.iter() {
-            lives += e.live_keys;
-            deads += e.dead_keys;
+            lives += e.live_keys();
+            deads += e.dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
@@ -940,8 +940,8 @@ mod tests {
         let mut lives = 0;
         let mut deads = 0;
         for e in handle.ctx.stats.iter() {
-            lives += e.live_keys;
-            deads += e.dead_keys;
+            lives += e.live_keys();
+            deads += e.dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(0, deads);
@@ -959,8 +959,8 @@ mod tests {
         let mut lives = 0;
         let mut deads = 0;
         for e in handle.ctx.stats.iter() {
-            lives += e.live_keys;
-            deads += e.dead_keys;
+            lives += e.live_keys();
+            deads += e.dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
