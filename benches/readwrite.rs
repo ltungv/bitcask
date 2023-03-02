@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use std::num::NonZeroUsize;
+
 use bytes::Bytes;
-use criterion::{black_box, SamplingMode};
+use criterion::{black_box, BenchmarkId, SamplingMode};
 
 use ::bitcask::storage::{bitcask, KeyValueStorage};
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
@@ -50,6 +52,7 @@ impl KeyValuePair {
 fn get_bitcask() -> (bitcask::Bitcask, TempDir) {
     let tmpdir = TempDir::new().unwrap();
     let bitcask = bitcask::Config::default()
+        .concurrency(NonZeroUsize::new(num_cpus::get_physical() * 16).unwrap())
         .path(tmpdir.path())
         .to_owned()
         .open()
@@ -114,21 +117,7 @@ fn bench_write(c: &mut Criterion) {
     let mut g = c.benchmark_group("bitcask_write");
     g.sampling_mode(SamplingMode::Flat);
     g.throughput(Throughput::Bytes(nbytes as u64));
-    g.bench_function("concurrent", |b| {
-        let pool = get_threadpool(num_cpus::get_physical());
-        pool.install(|| {
-            let (engine, _tmpdir) = get_bitcask();
-            b.iter_batched(
-                || {
-                    let mut kv_pairs = kv_pairs.clone();
-                    kv_pairs.shuffle(&mut rng);
-                    (engine.get_handle(), kv_pairs)
-                },
-                |(engine, kvs)| black_box(concurrent_write(engine, kvs)),
-                BatchSize::LargeInput,
-            );
-        });
-    });
+
     g.bench_function("sequential", |b| {
         let (engine, _tmpdir) = get_bitcask();
         b.iter_batched(
@@ -141,6 +130,27 @@ fn bench_write(c: &mut Criterion) {
             BatchSize::LargeInput,
         );
     });
+    for i in 0..4 {
+        let concurrency = 1 << i as usize;
+        g.bench_with_input(
+            BenchmarkId::new("concurrent", concurrency),
+            &concurrency,
+            |b, concurrency| {
+                get_threadpool(*concurrency as usize).install(|| {
+                    let (engine, _tmpdir) = get_bitcask();
+                    b.iter_batched(
+                        || {
+                            let mut kv_pairs = kv_pairs.clone();
+                            kv_pairs.shuffle(&mut rng);
+                            (engine.get_handle(), kv_pairs)
+                        },
+                        |(engine, kvs)| black_box(concurrent_write(engine, kvs)),
+                        BatchSize::LargeInput,
+                    );
+                });
+            },
+        );
+    }
     g.finish();
 }
 
@@ -154,24 +164,7 @@ fn bench_read(c: &mut Criterion) {
     let mut g = c.benchmark_group("bitcask_read");
     g.sampling_mode(SamplingMode::Flat);
     g.throughput(Throughput::Bytes(nbytes as u64));
-    g.bench_function("concurrent", |b| {
-        get_threadpool(num_cpus::get_physical()).install(|| {
-            let (engine, _tmpdir) = get_bitcask();
-            let handle = engine.get_handle();
-            kv_pairs.iter().cloned().for_each(|kv| {
-                handle.set(kv.0, kv.1).unwrap();
-            });
-            b.iter_batched(
-                || {
-                    let mut kv_pairs = kv_pairs.clone();
-                    kv_pairs.shuffle(&mut rng);
-                    (engine.get_handle(), kv_pairs)
-                },
-                |(engine, kvs)| black_box(concurrent_read(engine, kvs)),
-                BatchSize::LargeInput,
-            );
-        });
-    });
+
     g.bench_function("sequential", |b| {
         let (engine, _tmpdir) = get_bitcask();
         let handle = engine.get_handle();
@@ -188,6 +181,32 @@ fn bench_read(c: &mut Criterion) {
             BatchSize::LargeInput,
         );
     });
+    for i in 0..4 {
+        let concurrency = 1 << i as usize;
+        g.bench_with_input(
+            BenchmarkId::new("concurrent", concurrency),
+            &concurrency,
+            |b, concurrency| {
+                let pool = get_threadpool(*concurrency as usize);
+                pool.install(|| {
+                    let (engine, _tmpdir) = get_bitcask();
+                    let handle = engine.get_handle();
+                    kv_pairs.iter().cloned().for_each(|kv| {
+                        handle.set(kv.0, kv.1).unwrap();
+                    });
+                    b.iter_batched(
+                        || {
+                            let mut kv_pairs = kv_pairs.clone();
+                            kv_pairs.shuffle(&mut rng);
+                            (engine.get_handle(), kv_pairs)
+                        },
+                        |(engine, kvs)| black_box(concurrent_read(engine, kvs)),
+                        BatchSize::LargeInput,
+                    );
+                });
+            },
+        );
+    }
     g.finish();
 }
 
