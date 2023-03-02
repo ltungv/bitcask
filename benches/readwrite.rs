@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use bytes::Bytes;
 use criterion::{black_box, BenchmarkId, SamplingMode};
@@ -16,9 +17,9 @@ use rayon::{
 };
 use tempfile::TempDir;
 
-const ITER: usize = 1000;
-const KEY_SIZE: usize = 64;
-const VAL_SIZE: usize = 256;
+const ITER: usize = 10000;
+const KEY_SIZE: usize = 1024;
+const VAL_SIZE: usize = 8096;
 
 #[derive(Clone)]
 struct KeyValuePair(Bytes, Bytes);
@@ -130,7 +131,7 @@ fn bench_write(c: &mut Criterion) {
             BatchSize::LargeInput,
         );
     });
-    for i in 0..4 {
+    for i in 1..=3 {
         let concurrency = 1 << i as usize;
         g.bench_with_input(
             BenchmarkId::new("concurrent", concurrency),
@@ -181,7 +182,7 @@ fn bench_read(c: &mut Criterion) {
             BatchSize::LargeInput,
         );
     });
-    for i in 0..4 {
+    for i in 1..=3 {
         let concurrency = 1 << i as usize;
         g.bench_with_input(
             BenchmarkId::new("concurrent", concurrency),
@@ -212,7 +213,13 @@ fn bench_read(c: &mut Criterion) {
 
 criterion_group!(
     name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)));
+    config = Criterion::default()
+        .with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)))
+        .sample_size(200)
+        .confidence_level(0.99)
+        .significance_level(0.01)
+        .warm_up_time(Duration::from_secs(5))
+        .measurement_time(Duration::from_secs(10));
     targets = bench_write, bench_read,
 );
 criterion_main!(benches);

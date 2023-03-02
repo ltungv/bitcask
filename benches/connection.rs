@@ -10,7 +10,7 @@ use rand::{
 };
 use tokio::runtime::Runtime;
 
-const ITER: usize = 10000;
+const ITER: usize = 100000;
 struct FrameRandomizerConfig {
     array_size: usize,
     array_nesting_max: usize,
