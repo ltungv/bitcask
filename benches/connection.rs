@@ -88,7 +88,7 @@ fn bench_read_frame(c: &mut Criterion) {
                 let mut conn = Connection::new(&mut stream);
                 black_box(while conn.read_frame().await.unwrap().is_some() {})
             },
-            BatchSize::SmallInput,
+            BatchSize::LargeInput,
         );
     });
 }

@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use std::time::Duration;
+
 use bytes::Bytes;
-use criterion::black_box;
+use criterion::{black_box, SamplingMode};
 
 use ::bitcask::storage::{bitcask, KeyValueStorage};
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
@@ -112,6 +114,7 @@ fn bench_write(c: &mut Criterion) {
         .fold(0, |acc, kv| acc + kv.0.len() + kv.1.len());
 
     let mut g = c.benchmark_group("bitcask_write");
+    g.sampling_mode(SamplingMode::Flat);
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_function("concurrent", |b| {
         let pool = get_threadpool(num_cpus::get_physical());
@@ -120,7 +123,7 @@ fn bench_write(c: &mut Criterion) {
             b.iter_batched(
                 || (engine.get_handle(), kv_pairs.clone()),
                 |(engine, kvs)| black_box(concurrent_write(engine, kvs)),
-                BatchSize::SmallInput,
+                BatchSize::LargeInput,
             );
         });
     });
@@ -128,52 +131,6 @@ fn bench_write(c: &mut Criterion) {
         let (engine, _tmpdir) = get_bitcask();
         b.iter_batched(
             || (engine.get_handle(), kv_pairs.clone()),
-            |(engine, kvs)| black_box(sequential_write(engine, kvs)),
-            BatchSize::SmallInput,
-        );
-    });
-    g.finish();
-}
-
-fn bench_overwrite(c: &mut Criterion) {
-    let mut rng = StdRng::seed_from_u64((1 << 7) + 1);
-    let kv_pairs = KeyValuePair::random_many(&mut rng, ITER, KEY_SIZE, VAL_SIZE);
-    let nbytes = kv_pairs
-        .iter()
-        .fold(0, |acc, kv| acc + kv.0.len() + kv.1.len());
-
-    let mut g = c.benchmark_group("bitcask_overwrite");
-    g.throughput(Throughput::Bytes(nbytes as u64));
-    g.bench_function("concurrent", |b| {
-        get_threadpool(num_cpus::get_physical()).install(|| {
-            let (engine, _tmpdir) = get_bitcask();
-            let handle = engine.get_handle();
-            kv_pairs.iter().cloned().for_each(|kv| {
-                handle.set(kv.0, kv.1).unwrap();
-            });
-            b.iter_batched(
-                || {
-                    let mut kv_pairs = kv_pairs.to_vec();
-                    kv_pairs.shuffle(&mut rand::thread_rng());
-                    (handle.clone(), kv_pairs)
-                },
-                |(engine, kvs)| black_box(concurrent_write(engine, kvs)),
-                BatchSize::SmallInput,
-            );
-        });
-    });
-    g.bench_function("sequential", |b| {
-        let (engine, _tmpdir) = get_bitcask();
-        let handle = engine.get_handle();
-        kv_pairs.iter().cloned().for_each(|kv| {
-            handle.set(kv.0, kv.1).unwrap();
-        });
-        b.iter_batched(
-            || {
-                let mut kv_pairs = kv_pairs.to_vec();
-                kv_pairs.shuffle(&mut rand::thread_rng());
-                (handle.clone(), kv_pairs)
-            },
             |(engine, kvs)| black_box(sequential_write(engine, kvs)),
             BatchSize::LargeInput,
         );
@@ -189,6 +146,7 @@ fn bench_read(c: &mut Criterion) {
         .fold(0, |acc, kv| acc + kv.0.len() + kv.1.len());
 
     let mut g = c.benchmark_group("bitcask_read");
+    g.sampling_mode(SamplingMode::Flat);
     g.throughput(Throughput::Bytes(nbytes as u64));
     g.bench_function("concurrent", |b| {
         get_threadpool(num_cpus::get_physical()).install(|| {
@@ -197,7 +155,6 @@ fn bench_read(c: &mut Criterion) {
             kv_pairs.iter().cloned().for_each(|kv| {
                 handle.set(kv.0, kv.1).unwrap();
             });
-            concurrent_read(handle, kv_pairs.clone());
             b.iter_batched(
                 || {
                     let mut kv_pairs = kv_pairs.clone();
@@ -205,7 +162,7 @@ fn bench_read(c: &mut Criterion) {
                     (engine.get_handle(), kv_pairs)
                 },
                 |(engine, kvs)| black_box(concurrent_read(engine, kvs)),
-                BatchSize::SmallInput,
+                BatchSize::LargeInput,
             );
         });
     });
@@ -215,7 +172,6 @@ fn bench_read(c: &mut Criterion) {
         kv_pairs.iter().cloned().for_each(|kv| {
             handle.set(kv.0, kv.1).unwrap();
         });
-        sequential_read(handle, kv_pairs.clone());
         b.iter_batched(
             || {
                 let mut kv_pairs = kv_pairs.clone();
@@ -223,7 +179,7 @@ fn bench_read(c: &mut Criterion) {
                 (engine.get_handle(), kv_pairs)
             },
             |(engine, kvs)| black_box(sequential_read(engine, kvs)),
-            BatchSize::SmallInput,
+            BatchSize::LargeInput,
         );
     });
     g.finish();
@@ -231,7 +187,11 @@ fn bench_read(c: &mut Criterion) {
 
 criterion_group!(
     name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
-    targets = bench_write, bench_read, bench_overwrite
+    config = Criterion::default()
+        .sample_size(500)
+        .warm_up_time(Duration::from_secs(5))
+        .measurement_time(Duration::from_secs(10))
+        .with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)));
+    targets = bench_write, bench_read,
 );
 criterion_main!(benches);
