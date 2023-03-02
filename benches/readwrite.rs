@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-use std::time::Duration;
-
 use bytes::Bytes;
 use criterion::{black_box, SamplingMode};
 
@@ -121,7 +119,11 @@ fn bench_write(c: &mut Criterion) {
         pool.install(|| {
             let (engine, _tmpdir) = get_bitcask();
             b.iter_batched(
-                || (engine.get_handle(), kv_pairs.clone()),
+                || {
+                    let mut kv_pairs = kv_pairs.clone();
+                    kv_pairs.shuffle(&mut rng);
+                    (engine.get_handle(), kv_pairs)
+                },
                 |(engine, kvs)| black_box(concurrent_write(engine, kvs)),
                 BatchSize::LargeInput,
             );
@@ -130,7 +132,11 @@ fn bench_write(c: &mut Criterion) {
     g.bench_function("sequential", |b| {
         let (engine, _tmpdir) = get_bitcask();
         b.iter_batched(
-            || (engine.get_handle(), kv_pairs.clone()),
+            || {
+                let mut kv_pairs = kv_pairs.clone();
+                kv_pairs.shuffle(&mut rng);
+                (engine.get_handle(), kv_pairs)
+            },
             |(engine, kvs)| black_box(sequential_write(engine, kvs)),
             BatchSize::LargeInput,
         );
@@ -158,7 +164,7 @@ fn bench_read(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let mut kv_pairs = kv_pairs.clone();
-                    kv_pairs.shuffle(&mut rand::thread_rng());
+                    kv_pairs.shuffle(&mut rng);
                     (engine.get_handle(), kv_pairs)
                 },
                 |(engine, kvs)| black_box(concurrent_read(engine, kvs)),
@@ -175,7 +181,7 @@ fn bench_read(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut kv_pairs = kv_pairs.clone();
-                kv_pairs.shuffle(&mut rand::thread_rng());
+                kv_pairs.shuffle(&mut rng);
                 (engine.get_handle(), kv_pairs)
             },
             |(engine, kvs)| black_box(sequential_read(engine, kvs)),
@@ -187,11 +193,7 @@ fn bench_read(c: &mut Criterion) {
 
 criterion_group!(
     name = benches;
-    config = Criterion::default()
-        .sample_size(500)
-        .warm_up_time(Duration::from_secs(5))
-        .measurement_time(Duration::from_secs(10))
-        .with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)));
+    config = Criterion::default().with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)));
     targets = bench_write, bench_read,
 );
 criterion_main!(benches);
