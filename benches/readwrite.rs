@@ -53,7 +53,7 @@ impl KeyValuePair {
 fn get_bitcask() -> (bitcask::Bitcask, TempDir) {
     let tmpdir = TempDir::new().unwrap();
     let bitcask = bitcask::Config::default()
-        .concurrency(NonZeroUsize::new(num_cpus::get_physical() * 16).unwrap())
+        .concurrency(NonZeroUsize::new(num_cpus::get_physical()).unwrap())
         .path(tmpdir.path())
         .to_owned()
         .open()
@@ -182,8 +182,7 @@ fn bench_read(c: &mut Criterion) {
             BatchSize::LargeInput,
         );
     });
-    for i in 1..=3 {
-        let concurrency = 1 << i as usize;
+    for concurrency in [2, 4, 6, 8] {
         g.bench_with_input(
             BenchmarkId::new("concurrent", concurrency),
             &concurrency,
@@ -215,7 +214,7 @@ criterion_group!(
     name = benches;
     config = Criterion::default()
         .with_profiler(PProfProfiler::new(500, Output::Flamegraph(None)))
-        .sample_size(200)
+        .sample_size(100)
         .confidence_level(0.99)
         .significance_level(0.01)
         .warm_up_time(Duration::from_secs(5))
