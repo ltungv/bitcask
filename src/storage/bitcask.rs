@@ -289,8 +289,6 @@ impl Handle {
     }
 }
 
-impl Context {}
-
 impl Writer {
     /// Set the value of a key and overwrite any existing value at that key.
     ///
@@ -554,6 +552,18 @@ impl Writer {
             }
         }
         Ok(fileids)
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        if self.written_bytes == 0 {
+            return;
+        }
+        let active_datafile = utils::datafile_name(&self.ctx.conf.path, self.active_fileid);
+        if let Err(e) = fs::remove_file(active_datafile) {
+            error!(cause=?e, fileid=self.active_fileid, "can't remove empty data file");
+        }
     }
 }
 
