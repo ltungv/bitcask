@@ -16,14 +16,14 @@ use super::{
 
 /// Position and length of an log entry within a log file.
 #[derive(Debug, PartialEq, Eq)]
-pub struct LogIndex {
-    pub len: u64,
-    pub pos: u64,
+pub(super) struct LogIndex {
+    pub(super) len: u64,
+    pub(super) pos: u64,
 }
 
 /// Keeping track of the number of live/dead keys and how much space do the dead keys occupy.
 #[derive(Debug, Default)]
-pub struct LogStatistics {
+pub(super) struct LogStatistics {
     live_keys: u64,
     dead_keys: u64,
     dead_bytes: u64,
@@ -31,36 +31,36 @@ pub struct LogStatistics {
 
 impl LogStatistics {
     /// Add a live key to the statistics.
-    pub fn add_live(&mut self) {
+    pub(super) fn add_live(&mut self) {
         self.live_keys += 1;
     }
 
     /// Add a dead key to the statistics where `nbytes` is the size of the entry on disk.
-    pub fn add_dead(&mut self, nbytes: u64) {
+    pub(super) fn add_dead(&mut self, nbytes: u64) {
         self.dead_keys += 1;
         self.dead_bytes += nbytes;
     }
 
-    pub fn overwrite(&mut self, nbytes: u64) {
+    pub(super) fn overwrite(&mut self, nbytes: u64) {
         self.live_keys -= 1;
         self.dead_keys += 1;
         self.dead_bytes += nbytes;
     }
 
-    pub fn live_keys(&self) -> u64 {
+    pub(super) fn live_keys(&self) -> u64 {
         self.live_keys
     }
 
-    pub fn dead_keys(&self) -> u64 {
+    pub(super) fn dead_keys(&self) -> u64 {
         self.dead_keys
     }
 
-    pub fn dead_bytes(&self) -> u64 {
+    pub(super) fn dead_bytes(&self) -> u64 {
         self.dead_bytes
     }
 
     /// Calculate the fraction of dead keys to total keys
-    pub fn fragmentation(&self) -> f64 {
+    pub(super) fn fragmentation(&self) -> f64 {
         // We avoid performing the calculation when there's no dead keys. This also helps avoiding
         // a division by zero
         let live = self.live_keys();
@@ -75,15 +75,15 @@ impl LogStatistics {
 
 /// A wrapper arround a LRU cache of log readers
 #[derive(Debug)]
-pub struct LogDir(LruCache<u64, LogReader>);
+pub(super) struct LogDir(LruCache<u64, LogReader>);
 
 impl LogDir {
     /// Create a new LRU readers cache with the specified size.
-    pub fn new(size: NonZeroUsize) -> Self {
+    pub(super) fn new(size: NonZeroUsize) -> Self {
         Self(LruCache::new(size))
     }
 
-    pub unsafe fn read<T, P>(
+    pub(super) unsafe fn read<T, P>(
         &mut self,
         path: P,
         fileid: u64,
@@ -106,7 +106,7 @@ impl LogDir {
         }
     }
 
-    pub unsafe fn copy<P, W>(
+    pub(super) unsafe fn copy<P, W>(
         &mut self,
         path: P,
         fileid: u64,
@@ -133,17 +133,17 @@ impl LogDir {
 
 /// An append-only file writer that serializes data using `bincode`.
 #[derive(Debug)]
-pub struct LogWriter(BufWriterWithPos<fs::File>);
+pub(super) struct LogWriter(BufWriterWithPos<fs::File>);
 
 impl LogWriter {
     /// Create a new log writer for writing entries to the given file.
-    pub fn new(file: fs::File) -> io::Result<Self> {
+    pub(super) fn new(file: fs::File) -> io::Result<Self> {
         let writer = BufWriterWithPos::new(file)?;
         Ok(Self(writer))
     }
 
     /// Serialize the given entry at EOF and ensure to flush all data to the I/O device.
-    pub fn append<T>(&mut self, entry: &T) -> Result<LogIndex, Error>
+    pub(super) fn append<T>(&mut self, entry: &T) -> Result<LogIndex, Error>
     where
         T: Serialize,
     {
@@ -157,21 +157,21 @@ impl LogWriter {
     }
 
     /// Synchronize all data to disk.
-    pub fn sync(&mut self) -> io::Result<()> {
+    pub(super) fn sync(&mut self) -> io::Result<()> {
         self.0.get_ref().sync_all()
     }
 }
 
 /// A random-access file reader that deserializes data using `bincode`.
 #[derive(Debug)]
-pub struct LogReader {
+pub(super) struct LogReader {
     mmap: memmap2::Mmap,
     file: fs::File,
 }
 
 impl LogReader {
     /// Create a new log reader for reading entries from the given file.
-    pub fn new(file: fs::File) -> io::Result<Self> {
+    pub(super) fn new(file: fs::File) -> io::Result<Self> {
         // SAFETY: We just create a Mmap without doing any read so there's nothing to worry about.
         // All methods that access `LogReader` MUST be maked unsafe since the caller is responsible
         // for providing a valid file position.
@@ -184,7 +184,7 @@ impl LogReader {
     /// # Safety
     ///
     /// The caller must ensure that the file segment given by `len` and `pos` is valid.
-    pub unsafe fn at<T>(&mut self, len: u64, pos: u64) -> Result<T, Error>
+    pub(super) unsafe fn at<T>(&mut self, len: u64, pos: u64) -> Result<T, Error>
     where
         T: DeserializeOwned,
     {
@@ -204,7 +204,7 @@ impl LogReader {
     /// # Safety
     ///
     /// The caller must ensure that the file segment given by `len` and `pos` is valid.
-    pub unsafe fn copy_raw<W>(&mut self, len: u64, pos: u64, dst: &mut W) -> io::Result<u64>
+    pub(super) unsafe fn copy_raw<W>(&mut self, len: u64, pos: u64, dst: &mut W) -> io::Result<u64>
     where
         W: Write,
     {
@@ -221,17 +221,17 @@ impl LogReader {
 
 /// A sequential-access file reader that deserializes data using `bincode`.
 #[derive(Debug)]
-pub struct LogIterator(BufReaderWithPos<fs::File>);
+pub(super) struct LogIterator(BufReaderWithPos<fs::File>);
 
 impl LogIterator {
     /// Create a new log iterator for iterating through entries from the given file.
-    pub fn new(file: fs::File) -> io::Result<Self> {
+    pub(super) fn new(file: fs::File) -> io::Result<Self> {
         let reader = BufReaderWithPos::new(file)?;
         Ok(Self(reader))
     }
 
     /// Return the entry at the current reader position.
-    pub fn next<T>(&mut self) -> Result<Option<(LogIndex, T)>, Error>
+    pub(super) fn next<T>(&mut self) -> Result<Option<(LogIndex, T)>, Error>
     where
         T: DeserializeOwned,
     {
@@ -255,7 +255,7 @@ impl LogIterator {
 }
 
 /// Create a new data file for writing entries to.
-pub fn create<P>(path: P) -> io::Result<fs::File>
+pub(super) fn create<P>(path: P) -> io::Result<fs::File>
 where
     P: AsRef<Path>,
 {
@@ -266,7 +266,7 @@ where
 }
 
 /// Open a data file for reading entries from.
-pub fn open<P>(path: P) -> io::Result<fs::File>
+pub(super) fn open<P>(path: P) -> io::Result<fs::File>
 where
     P: AsRef<Path>,
 {

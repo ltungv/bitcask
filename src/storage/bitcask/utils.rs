@@ -10,7 +10,7 @@ const DATAFILE_EXT: &str = "data";
 const HINTFILE_EXT: &str = "hint";
 
 /// Return the data file name given its ID.
-pub fn datafile_name<P>(path: P, fileid: u64) -> PathBuf
+pub(super) fn datafile_name<P>(path: P, fileid: u64) -> PathBuf
 where
     P: AsRef<Path>,
 {
@@ -19,7 +19,7 @@ where
 }
 
 /// Return the hint file name given its ID.
-pub fn hintfile_name<P>(path: P, fileid: u64) -> PathBuf
+pub(super) fn hintfile_name<P>(path: P, fileid: u64) -> PathBuf
 where
     P: AsRef<Path>,
 {
@@ -28,7 +28,7 @@ where
 }
 
 /// Returns a list of sorted file IDs by parsing the data file names in the directory.
-pub fn sorted_fileids<P>(path: P) -> io::Result<impl Iterator<Item = u64>>
+pub(super) fn sorted_fileids<P>(path: P) -> io::Result<impl Iterator<Item = u64>>
 where
     P: AsRef<Path>,
 {
@@ -53,7 +53,7 @@ where
 }
 
 /// Return system unix nano timestamp
-pub fn timestamp() -> i64 {
+pub(super) fn timestamp() -> i64 {
     chrono::Local::now().timestamp_nanos()
 }
 

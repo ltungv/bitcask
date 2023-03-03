@@ -2,22 +2,16 @@
 
 mod bufio;
 mod config;
+mod context;
 mod log;
+mod reader;
 mod utils;
+mod writer;
 
-use std::{
-    cell::RefCell,
-    collections::{BTreeSet, HashMap},
-    fs,
-    io::{self, BufWriter},
-    path::Path,
-    sync::Arc,
-    time,
-};
+use std::{cell::RefCell, collections::HashMap, io, path::Path, sync::Arc, time};
 
 use bytes::Bytes;
-use chrono::Timelike;
-use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
+use crossbeam::{queue::ArrayQueue, utils::Backoff};
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 use rand::prelude::Distribution;
@@ -28,31 +22,16 @@ use tracing::{debug, error, info};
 
 pub use self::config::{Config, SyncStrategy};
 use self::{
+    context::KeyDirEntry,
     log::{LogDir, LogIterator, LogStatistics, LogWriter},
-    utils::datafile_name,
+    reader::Reader,
+    writer::Writer,
 };
 use super::KeyValueStorage;
-use crate::{shutdown::Shutdown, storage::bitcask::config::MergePolicy};
-
-/// Error returned by Bitcask
-#[derive(Error, Debug)]
-pub enum Error {
-    /// Error from operating on a closed storage
-    #[error("Storage has been closed")]
-    Closed,
-
-    /// Error from I/O operations.
-    #[error("I/O error - {0}")]
-    Io(#[from] io::Error),
-
-    /// Error from serialization and deserialization.
-    #[error("Serialization error - {0}")]
-    Serialization(#[from] bincode::Error),
-
-    /// Error from running asynchronous tasks.
-    #[error("Asynchronous task error - {0}")]
-    AsyncTask(#[from] tokio::task::JoinError),
-}
+use crate::{
+    shutdown::Shutdown,
+    storage::bitcask::{config::MergePolicy, context::Context},
+};
 
 /// An implementation of a Bitcask instance whose APIs resemble the one given in [bitcask-intro.pdf]
 /// but with a few methods omitted.
@@ -80,70 +59,6 @@ pub struct Bitcask {
     notify_shutdown: broadcast::Sender<()>,
 }
 
-/// A handle that can be shared across threads that want to access the storage.
-#[derive(Clone, Debug)]
-pub struct Handle {
-    /// The states that are shared between the writer and the readers.
-    ctx: Arc<Context>,
-
-    /// A mutex-protected writer used for appending data entry to the active data files. All
-    /// operations that make changes to the active data file are delegated to this object.
-    writer: Arc<Mutex<Writer>>,
-
-    /// A readers queue for parallelizing read-access to the key-value store. Upon a read-access,
-    /// a reader is taken from the queue and used for reading the data files. Once we finish
-    /// reading, the reader is returned back to the queue.
-    readers: Arc<ArrayQueue<Reader>>,
-}
-
-/// The context holds states that are shared across both reads and writes operations.
-#[derive(Debug)]
-struct Context {
-    /// Storage configurations.
-    conf: Config,
-
-    /// The mapping from keys to the positions of their values on disk.
-    keydir: SkipMap<Bytes, KeyDirEntry>,
-
-    /// Mark whether the storage has been closed
-    closed: AtomicCell<bool>,
-}
-
-/// The writer appends log entries to data files and ensures that indices in KeyDir point to a valid
-/// file locations.
-#[derive(Debug)]
-struct Writer {
-    /// The states that are shared with the readers.
-    ctx: Arc<Context>,
-
-    /// The cache of file descriptors for reading the data files.
-    readers: RefCell<LogDir>,
-
-    /// A writer that appends entries to the currently active file.
-    writer: LogWriter,
-
-    /// Counts of different metrics about the storage.
-    stats: HashMap<u64, LogStatistics>,
-
-    /// The ID of the currently active file.
-    active_fileid: u64,
-
-    /// The number of bytes that have been written to the currently active file.
-    written_bytes: u64,
-}
-
-/// The reader reads log entries from data files given the locations found in KeyDir. Since data files
-/// are immutable (except for the active one), we can safely read them concurrently without any extra
-/// synchronization between threads.
-#[derive(Debug)]
-struct Reader {
-    /// The states that are shared with the writer.
-    ctx: Arc<Context>,
-
-    /// The cache of file descriptors for reading the data files.
-    readers: RefCell<LogDir>,
-}
-
 impl Bitcask {
     fn open(conf: Config) -> Result<Self, Error> {
         info!(?conf, "openning bitcask");
@@ -152,33 +67,29 @@ impl Bitcask {
         let (keydir, stats, active_fileid) = rebuild_storage(&conf.path)?;
         debug!(?active_fileid, "got new active file ID");
 
-        let ctx = Arc::new(Context {
-            conf,
-            keydir,
-            closed: AtomicCell::new(false),
-        });
+        let ctx = Arc::new(Context::new(conf, keydir));
 
-        let readers = Arc::new(ArrayQueue::new(ctx.conf.concurrency.get()));
+        let readers = Arc::new(ArrayQueue::new(ctx.get_conf().concurrency.get()));
         for _ in 0..readers.capacity() {
             readers
-                .push(Reader {
-                    ctx: ctx.clone(),
-                    readers: RefCell::new(LogDir::new(ctx.conf.readers_cache_size)),
-                })
+                .push(Reader::new(
+                    ctx.clone(),
+                    RefCell::new(LogDir::new(ctx.get_conf().readers_cache_size)),
+                ))
                 .expect("unreachable error");
         }
 
-        let writer = Arc::new(Mutex::new(Writer {
-            ctx: ctx.clone(),
-            readers: RefCell::new(LogDir::new(ctx.conf.readers_cache_size)),
-            writer: LogWriter::new(log::create(utils::datafile_name(
-                &ctx.conf.path,
+        let writer = Arc::new(Mutex::new(Writer::new(
+            ctx.clone(),
+            RefCell::new(LogDir::new(ctx.get_conf().readers_cache_size)),
+            LogWriter::new(log::create(utils::datafile_name(
+                &ctx.get_conf().path,
                 active_fileid,
             ))?)?,
             stats,
             active_fileid,
-            written_bytes: 0,
-        }));
+            0,
+        )));
 
         let handle = Handle {
             ctx,
@@ -217,39 +128,39 @@ impl Drop for Bitcask {
     }
 }
 
-impl KeyValueStorage for Handle {
-    type Error = Error;
+/// A handle that can be shared across threads that want to access the storage.
+#[derive(Clone, Debug)]
+pub struct Handle {
+    /// The states that are shared between the writer and the readers.
+    ctx: Arc<Context>,
 
-    fn del(&self, key: Bytes) -> Result<bool, Self::Error> {
-        self.delete(key)
-    }
+    /// A mutex-protected writer used for appending data entry to the active data files. All
+    /// operations that make changes to the active data file are delegated to this object.
+    writer: Arc<Mutex<Writer>>,
 
-    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error> {
-        self.get(key)
-    }
-
-    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error> {
-        self.put(key, value)
-    }
+    /// A readers queue for parallelizing read-access to the key-value store. Upon a read-access,
+    /// a reader is taken from the queue and used for reading the data files. Once we finish
+    /// reading, the reader is returned back to the queue.
+    readers: Arc<ArrayQueue<Reader>>,
 }
 
 impl Handle {
     fn put(&self, key: Bytes, value: Bytes) -> Result<(), Error> {
-        if self.ctx.closed.load() {
+        if self.ctx.is_closed() {
             return Err(Error::Closed);
         }
         self.writer.lock().put(key, value)
     }
 
     fn delete(&self, key: Bytes) -> Result<bool, Error> {
-        if self.ctx.closed.load() {
+        if self.ctx.is_closed() {
             return Err(Error::Closed);
         }
         self.writer.lock().delete(key)
     }
 
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
-        if self.ctx.closed.load() {
+        if self.ctx.is_closed() {
             return Err(Error::Closed);
         }
         let backoff = Backoff::new();
@@ -267,7 +178,7 @@ impl Handle {
     }
 
     fn merge(&self) -> Result<(), Error> {
-        if self.ctx.closed.load() {
+        if self.ctx.is_closed() {
             return Err(Error::Closed);
         }
         let mut writer = self.writer.lock();
@@ -278,321 +189,30 @@ impl Handle {
     }
 
     fn sync(&self) -> Result<(), Error> {
-        if self.ctx.closed.load() {
+        if self.ctx.is_closed() {
             return Err(Error::Closed);
         }
         self.writer.lock().sync()
     }
 
     fn close(&self) {
-        self.ctx.closed.store(true)
+        self.ctx.close()
     }
 }
 
-impl Writer {
-    /// Set the value of a key and overwrite any existing value at that key.
-    ///
-    /// # Error
-    ///
-    /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn put(&mut self, key: Bytes, value: Bytes) -> Result<(), Error> {
-        // Write to disk
-        let keydir_entry = self.write(utils::timestamp(), key.clone(), Some(value))?;
-        // If we overwrite an existing value, update the storage statistics
-        let prev_entry = self.ctx.keydir.get(&key);
-        self.ctx.keydir.insert(key, keydir_entry);
-        if let Some(entry) = prev_entry {
-            self.stats
-                .entry(entry.value().fileid)
-                .or_default()
-                .overwrite(entry.value().len);
-        }
-        Ok(())
+impl KeyValueStorage for Handle {
+    type Error = Error;
+
+    fn del(&self, key: Bytes) -> Result<bool, Self::Error> {
+        self.delete(key)
     }
 
-    /// Delete a key and return `true`, if it exists. Otherwise, return `false`.
-    ///
-    /// # Error
-    ///
-    /// Errors from I/O operations and serializations/deserializations will be propagated.
-    fn delete(&mut self, key: Bytes) -> Result<bool, Error> {
-        // Write to disk
-        self.write(utils::timestamp(), key.clone(), None)?;
-        // If we overwrite an existing value, update the storage statistics
-        match self.ctx.keydir.remove(&key) {
-            Some(entry) => {
-                self.stats
-                    .entry(entry.value().fileid)
-                    .or_default()
-                    .overwrite(entry.value().len);
-                Ok(true)
-            }
-            None => Ok(false),
-        }
+    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Self::Error> {
+        self.get(key)
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
-    fn write(
-        &mut self,
-        tstamp: i64,
-        key: Bytes,
-        value: Option<Bytes>,
-    ) -> Result<KeyDirEntry, Error> {
-        // Append log entry
-        let datafile_entry = DataFileEntry { tstamp, key, value };
-        let index = self.writer.append(&datafile_entry)?;
-        // Sync immediately if the strategy is "always"
-        if let SyncStrategy::Always = self.ctx.conf.sync {
-            self.writer.sync()?;
-        }
-        // Record number of bytes have been written to the active file
-        self.written_bytes += index.len;
-
-        // NOTE: This explicit scope is used to control the lifetime of `stats` which we borrow
-        // from `self`. `stats` has to be dropped before we make a call to `new_active_datafile`.
-        {
-            // Collect statistics of the active data file for the merging process. If we add
-            // a value to a key, we increase the number of live keys. If we add a tombstone,
-            // we increase the number of dead keys.
-            let entry = self.stats.entry(self.active_fileid).or_default();
-            if datafile_entry.value.is_some() {
-                entry.add_live();
-            } else {
-                entry.add_dead(index.len);
-            }
-            debug!(
-                entry_len = %index.len,
-                entry_pos = %index.pos,
-                active_fileid = %self.active_fileid,
-                active_file_size = %self.written_bytes,
-                active_live_keys = %entry.live_keys(),
-                active_dead_keys = %entry.dead_keys(),
-                active_dead_bytes = %entry.dead_bytes(),
-                "appended new log entry"
-            );
-        }
-
-        let keydir_entry = KeyDirEntry {
-            fileid: self.active_fileid,
-            len: index.len,
-            pos: index.pos,
-            tstamp,
-        };
-
-        // Check if active file size exceeds the max limit. This must be done as the last step of
-        // the writing process, otherwise we risk corrupting the storage states.
-        if self.written_bytes > self.ctx.conf.max_file_size.get() {
-            self.new_active_datafile(self.active_fileid + 1)?;
-        }
-        Ok(keydir_entry)
-    }
-
-    /// Copy data from files that are included for merging. Once finish, copied files are deleted.
-    #[tracing::instrument(level = "debug", skip(self))]
-    fn merge(&mut self) -> Result<(), Error> {
-        let path = self.ctx.conf.path.as_path();
-        let min_merge_fileid = self.active_fileid + 1;
-        let mut merge_fileid = min_merge_fileid;
-        debug!(merge_fileid, "new merge file");
-
-        // Get the set of file ids to be merged
-        let fileids_to_merge = self.fileids_to_merge(path)?;
-        // Copy entries to a temporary map so we don't modify the KeyDir while iterating.
-        let mut new_keydir_entries = HashMap::new();
-
-        // NOTE: we use an explicit scope here to control the lifetimes of `readers`,
-        // `merge_datafile_writer` and `merge_hintfile_writer`. We drop the readers
-        // early so we can later mutably borrow `self` and drop the writers early so
-        // they are flushed.
-        {
-            let mut readers = self.readers.borrow_mut();
-            let mut merge_pos = 0;
-            let mut merge_datafile_writer =
-                BufWriter::new(log::create(utils::datafile_name(path, merge_fileid))?);
-            let mut merge_hintfile_writer =
-                LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
-
-            // Only go through entries whose values are located within the merged files.
-            for entry in self
-                .ctx
-                .keydir
-                .iter()
-                .filter(|e| fileids_to_merge.contains(&e.value().fileid))
-            {
-                // SAFETY: We ensure in `BitcaskWriter` that all log entries given by
-                // KeyDir are written disk, thus the readers can savely use memmap to
-                // access the data file randomly.
-                let nbytes = unsafe {
-                    readers.copy(
-                        path,
-                        entry.value().fileid,
-                        entry.value().len,
-                        entry.value().pos,
-                        &mut merge_datafile_writer,
-                    )?
-                };
-
-                new_keydir_entries.insert(
-                    entry.key().clone(),
-                    KeyDirEntry {
-                        fileid: merge_fileid,
-                        len: nbytes,
-                        pos: merge_pos,
-                        tstamp: entry.value().tstamp,
-                    },
-                );
-
-                // the merge file must only contain live keys
-                let stats = self.stats.entry(merge_fileid).or_default();
-                stats.add_live();
-
-                // write the KeyDir entry to the hint file for fast recovery
-                merge_hintfile_writer.append(&HintFileEntry {
-                    tstamp: entry.value().tstamp,
-                    len: entry.value().len,
-                    pos: entry.value().pos,
-                    key: entry.key().clone(),
-                })?;
-
-                // switch to new merge data file if we exceed the max file size
-                merge_pos += nbytes;
-                if merge_pos > self.ctx.conf.max_file_size.get() {
-                    merge_fileid += 1;
-                    merge_pos = 0;
-                    merge_datafile_writer =
-                        BufWriter::new(log::create(utils::datafile_name(path, merge_fileid))?);
-                    merge_hintfile_writer =
-                        LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
-                    debug!(merge_fileid, "new merge file");
-                }
-            }
-        }
-
-        // Update keydir so it points to the merge data file
-        for (k, v) in new_keydir_entries {
-            self.ctx.keydir.insert(k, v);
-        }
-
-        // Remove stale files from system and storage statistics
-        for id in &fileids_to_merge {
-            self.stats.remove(id);
-            if let Err(e) = fs::remove_file(utils::hintfile_name(path, *id)) {
-                if e.kind() != io::ErrorKind::NotFound {
-                    return Err(e.into());
-                }
-            }
-            if let Err(e) = fs::remove_file(utils::datafile_name(path, *id)) {
-                if e.kind() != io::ErrorKind::NotFound {
-                    return Err(e.into());
-                }
-            }
-        }
-
-        self.new_active_datafile(merge_fileid + 1)?;
-        Ok(())
-    }
-
-    /// Synchronize data to disk. This tells the operating system to flush its internal buffer to
-    /// ensure that data is actually persisted.
-    pub fn sync(&mut self) -> Result<(), Error> {
-        self.writer.sync()?;
-        Ok(())
-    }
-
-    /// Updates the active file ID and open a new data file with the new active ID.
-    #[tracing::instrument(level = "debug", skip(self))]
-    fn new_active_datafile(&mut self, fileid: u64) -> Result<(), Error> {
-        self.active_fileid = fileid;
-        self.writer = LogWriter::new(log::create(utils::datafile_name(
-            self.ctx.conf.path.as_path(),
-            self.active_fileid,
-        ))?)?;
-        self.written_bytes = 0;
-        Ok(())
-    }
-    /// Return `true` if one of the merge trigger conditions is met.
-    fn can_merge(&self) -> bool {
-        match self.ctx.conf.merge.policy {
-            MergePolicy::Never => false,
-            ref policy => {
-                if let &MergePolicy::Window { start, end } = policy {
-                    let now = chrono::Local::now().time();
-                    let hour = now.hour();
-                    if hour < start || hour > end {
-                        return false;
-                    }
-                }
-                for (_, entry) in self.stats.iter() {
-                    // If any file met one of the trigger conditions, we'll try to merge
-                    if entry.dead_bytes() > self.ctx.conf.merge.triggers.dead_bytes
-                        || entry.fragmentation() > self.ctx.conf.merge.triggers.fragmentation
-                    {
-                        return true;
-                    }
-                }
-                false
-            }
-        }
-    }
-
-    /// Return the set of file IDs that are included for merging.
-    fn fileids_to_merge<P>(&self, path: P) -> Result<BTreeSet<u64>, Error>
-    where
-        P: AsRef<Path>,
-    {
-        let mut fileids = BTreeSet::new();
-        for (&fileid, stats) in self.stats.iter() {
-            let metadata = fs::metadata(datafile_name(&path, fileid))?;
-            // Files that met one of the threshold conditions are included
-            if stats.dead_bytes() > self.ctx.conf.merge.thresholds.dead_bytes
-                || stats.fragmentation() > self.ctx.conf.merge.thresholds.fragmentation
-                || metadata.len() < self.ctx.conf.merge.thresholds.small_file
-            {
-                fileids.insert(fileid);
-            }
-        }
-        Ok(fileids)
-    }
-}
-
-impl Drop for Writer {
-    fn drop(&mut self) {
-        if self.written_bytes == 0 {
-            return;
-        }
-        let active_datafile = utils::datafile_name(&self.ctx.conf.path, self.active_fileid);
-        if let Err(e) = fs::remove_file(active_datafile) {
-            error!(cause=?e, fileid=self.active_fileid, "can't remove empty data file");
-        }
-    }
-}
-
-impl Reader {
-    /// Get the value of a key and return it, if it exists, otherwise return return `None`.
-    ///
-    /// # Error
-    ///
-    /// Errors from I/O operations and serializations/deserializations will be propagated.
-    #[tracing::instrument(level = "debug", skip(self))]
-    fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
-        match self.ctx.keydir.get(&key) {
-            Some(entry) => {
-                // SAFETY: We have taken `keydir_entry` from KeyDir which is ensured to point to
-                // valid data file positions. Thus we can be confident that the Mmap won't be
-                // mapped to an invalid segment.
-                let datafile_entry = unsafe {
-                    self.readers.borrow_mut().read::<DataFileEntry, _>(
-                        &self.ctx.conf.path,
-                        entry.value().fileid,
-                        entry.value().len,
-                        entry.value().pos,
-                    )?
-                };
-
-                Ok(datafile_entry.value)
-            }
-            None => Ok(None),
-        }
+    fn set(&self, key: Bytes, value: Bytes) -> Result<(), Self::Error> {
+        self.put(key, value)
     }
 }
 
@@ -641,11 +261,11 @@ fn background_tasks(handle: Handle, notify_shutdown: broadcast::Sender<()>) -> R
 #[tracing::instrument(skip(handle, shutdown))]
 async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
     // Return early so we don't have to run the task
-    if let MergePolicy::Never = handle.ctx.conf.merge.policy {
+    if let MergePolicy::Never = handle.ctx.get_conf().merge.policy {
         return Ok(());
     }
-    let interval = time::Duration::from_millis(handle.ctx.conf.merge.check_interval_ms);
-    let jitter = interval.mul_f64(handle.ctx.conf.merge.check_jitter);
+    let interval = time::Duration::from_millis(handle.ctx.get_conf().merge.check_interval_ms);
+    let jitter = interval.mul_f64(handle.ctx.get_conf().merge.check_jitter);
     let dist = rand::distributions::Uniform::new_inclusive(interval - jitter, interval + jitter);
     while !shutdown.is_shutdown() {
         // Wake up the task when a specific interval has passed or when the storage is shutdown.
@@ -668,7 +288,7 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
 #[tracing::instrument(skip(handle, shutdown))]
 async fn sync_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(), Error> {
     // Only run task if we are requested to periodically sync
-    if let SyncStrategy::IntervalMs(d) = handle.ctx.conf.sync {
+    if let SyncStrategy::IntervalMs(d) = handle.ctx.get_conf().sync {
         let interval = time::Duration::from_millis(d);
         while !shutdown.is_shutdown() {
             // Wake up the task when a specific interval has passed or when the storage is shutdown.
@@ -813,12 +433,24 @@ where
     Ok(())
 }
 
-#[derive(Debug)]
-struct KeyDirEntry {
-    fileid: u64,
-    len: u64,
-    pos: u64,
-    tstamp: i64,
+/// Error returned by Bitcask
+#[derive(Error, Debug)]
+pub enum Error {
+    /// Error from operating on a closed storage
+    #[error("Storage has been closed")]
+    Closed,
+
+    /// Error from I/O operations.
+    #[error("I/O error - {0}")]
+    Io(#[from] io::Error),
+
+    /// Error from serialization and deserialization.
+    #[error("Serialization error - {0}")]
+    Serialization(#[from] bincode::Error),
+
+    /// Error from running asynchronous tasks.
+    #[error("Asynchronous task error - {0}")]
+    AsyncTask(#[from] tokio::task::JoinError),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -934,7 +566,7 @@ mod tests {
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        for (_, e) in handle.writer.lock().stats.iter() {
+        for (_, e) in handle.writer.lock().get_stats().iter() {
             lives += e.live_keys();
             deads += e.dead_keys();
         }
@@ -965,7 +597,7 @@ mod tests {
         // should get 10000 live keys and 0 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        for (_, e) in handle.writer.lock().stats.iter() {
+        for (_, e) in handle.writer.lock().get_stats().iter() {
             lives += e.live_keys();
             deads += e.dead_keys();
         }
@@ -984,7 +616,7 @@ mod tests {
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        for (_, e) in handle.writer.lock().stats.iter() {
+        for (_, e) in handle.writer.lock().get_stats().iter() {
             lives += e.live_keys();
             deads += e.dead_keys();
         }

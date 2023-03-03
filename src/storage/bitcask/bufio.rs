@@ -2,7 +2,7 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 /// A wrapper a round `BufReader` that keeps track of the last read position.
 #[derive(Debug)]
-pub struct BufReaderWithPos<R>
+pub(super) struct BufReaderWithPos<R>
 where
     R: Read,
 {
@@ -15,7 +15,7 @@ where
     R: Read + Seek,
 {
     /// Create a new buffered reader.
-    pub fn new(mut r: R) -> io::Result<Self> {
+    pub(super) fn new(mut r: R) -> io::Result<Self> {
         let pos = r.stream_position()?;
         let reader = BufReader::new(r);
         Ok(Self { pos, reader })
@@ -27,7 +27,7 @@ where
     R: Read,
 {
     /// Return the last read position.
-    pub fn pos(&self) -> u64 {
+    pub(super) fn pos(&self) -> u64 {
         self.pos
     }
 }
@@ -58,7 +58,7 @@ where
 
 /// A wrapper a round `BufWriter` that keeps track of the last written position.
 #[derive(Debug)]
-pub struct BufWriterWithPos<W>
+pub(super) struct BufWriterWithPos<W>
 where
     W: Write,
 {
@@ -71,7 +71,7 @@ where
     W: Write + Seek,
 {
     /// Create a new buffered writer.
-    pub fn new(mut w: W) -> io::Result<Self> {
+    pub(super) fn new(mut w: W) -> io::Result<Self> {
         let pos = w.seek(SeekFrom::End(0))?;
         let writer = BufWriter::new(w);
         Ok(Self { pos, writer })
@@ -83,12 +83,12 @@ where
     W: Write,
 {
     /// Return the last written postion.
-    pub fn pos(&self) -> u64 {
+    pub(super) fn pos(&self) -> u64 {
         self.pos
     }
 
     /// Get a reference to the underlying writer.
-    pub fn get_ref(&self) -> &W {
+    pub(super) fn get_ref(&self) -> &W {
         self.writer.get_ref()
     }
 }
