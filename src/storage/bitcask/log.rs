@@ -32,17 +32,17 @@ pub struct LogStatistics {
 
 impl LogStatistics {
     /// Add a live key to the statistics.
-    pub fn add_live(&mut self) {
+    pub fn add_live(&self) {
         self.live_keys.fetch_add(1, atomic::Ordering::AcqRel);
     }
 
     /// Add a dead key to the statistics where `nbytes` is the size of the entry on disk.
-    pub fn add_dead(&mut self, nbytes: u64) {
+    pub fn add_dead(&self, nbytes: u64) {
         self.dead_keys.fetch_add(1, atomic::Ordering::AcqRel);
         self.dead_bytes.fetch_add(nbytes, atomic::Ordering::AcqRel);
     }
 
-    pub fn overwrite(&mut self, nbytes: u64) {
+    pub fn overwrite(&self, nbytes: u64) {
         self.live_keys.fetch_sub(1, atomic::Ordering::AcqRel);
         self.dead_keys.fetch_add(1, atomic::Ordering::AcqRel);
         self.dead_bytes.fetch_add(nbytes, atomic::Ordering::AcqRel);

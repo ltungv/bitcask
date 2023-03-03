@@ -7,7 +7,7 @@ mod utils;
 
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs,
     io::{self, BufWriter},
     path::Path,
@@ -18,7 +18,7 @@ use std::{
 use bytes::Bytes;
 use chrono::Timelike;
 use crossbeam::{atomic::AtomicCell, queue::ArrayQueue, utils::Backoff};
-use dashmap::DashMap;
+use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 use rand::prelude::Distribution;
 use serde::{Deserialize, Serialize};
@@ -103,10 +103,10 @@ struct Context {
     conf: Config,
 
     /// The mapping from keys to the positions of their values on disk.
-    keydir: DashMap<Bytes, KeyDirEntry>,
+    keydir: SkipMap<Bytes, KeyDirEntry>,
 
     /// Counts of different metrics about the storage.
-    stats: DashMap<u64, LogStatistics>,
+    stats: SkipMap<u64, LogStatistics>,
 
     /// Mark whether the storage has been closed
     closed: AtomicCell<bool>,
@@ -300,8 +300,8 @@ impl Context {
                 }
                 for entry in self.stats.iter() {
                     // If any file met one of the trigger conditions, we'll try to merge
-                    if entry.dead_bytes() > self.conf.merge.triggers.dead_bytes
-                        || entry.fragmentation() > self.conf.merge.triggers.fragmentation
+                    if entry.value().dead_bytes() > self.conf.merge.triggers.dead_bytes
+                        || entry.value().fragmentation() > self.conf.merge.triggers.fragmentation
                     {
                         return true;
                     }
@@ -321,8 +321,8 @@ impl Context {
             let fileid = *entry.key();
             let metadata = fs::metadata(datafile_name(&path, fileid))?;
             // Files that met one of the threshold conditions are included
-            if entry.dead_bytes() > self.conf.merge.thresholds.dead_bytes
-                || entry.fragmentation() > self.conf.merge.thresholds.fragmentation
+            if entry.value().dead_bytes() > self.conf.merge.thresholds.dead_bytes
+                || entry.value().fragmentation() > self.conf.merge.thresholds.fragmentation
                 || metadata.len() < self.conf.merge.thresholds.small_file
             {
                 fileids.insert(fileid);
@@ -342,13 +342,14 @@ impl Writer {
         // Write to disk
         let keydir_entry = self.write(utils::timestamp(), key.clone(), Some(value))?;
         // If we overwrite an existing value, update the storage statistics
-        if let Some(prev_keydir_entry) = self.ctx.keydir.insert(key, keydir_entry) {
+        if let Some(entry) = self.ctx.keydir.remove(&key) {
             self.ctx
                 .stats
-                .entry(prev_keydir_entry.fileid)
-                .or_default()
-                .overwrite(prev_keydir_entry.len);
+                .get_or_insert_with(entry.value().fileid, LogStatistics::default)
+                .value()
+                .overwrite(entry.value().len);
         }
+        self.ctx.keydir.insert(key, keydir_entry);
         Ok(())
     }
 
@@ -362,12 +363,12 @@ impl Writer {
         self.write(utils::timestamp(), key.clone(), None)?;
         // If we overwrite an existing value, update the storage statistics
         match self.ctx.keydir.remove(&key) {
-            Some((_, prev_keydir_entry)) => {
+            Some(entry) => {
                 self.ctx
                     .stats
-                    .entry(prev_keydir_entry.fileid)
-                    .or_default()
-                    .overwrite(prev_keydir_entry.len);
+                    .get_or_insert_with(entry.value().fileid, LogStatistics::default)
+                    .value()
+                    .overwrite(entry.value().len);
                 Ok(true)
             }
             None => Ok(false),
@@ -397,20 +398,23 @@ impl Writer {
             // Collect statistics of the active data file for the merging process. If we add
             // a value to a key, we increase the number of live keys. If we add a tombstone,
             // we increase the number of dead keys.
-            let mut stats = self.ctx.stats.entry(self.active_fileid).or_default();
+            let entry = self
+                .ctx
+                .stats
+                .get_or_insert_with(self.active_fileid, LogStatistics::default);
             if datafile_entry.value.is_some() {
-                stats.add_live();
+                entry.value().add_live();
             } else {
-                stats.add_dead(index.len);
+                entry.value().add_dead(index.len);
             }
             debug!(
                 entry_len = %index.len,
                 entry_pos = %index.pos,
                 active_fileid = %self.active_fileid,
                 active_file_size = %self.written_bytes,
-                active_live_keys = %stats.live_keys(),
-                active_dead_keys = %stats.dead_keys(),
-                active_dead_bytes = %stats.dead_bytes(),
+                active_live_keys = %entry.value().live_keys(),
+                active_dead_keys = %entry.value().dead_keys(),
+                active_dead_bytes = %entry.value().dead_bytes(),
                 "appended new log entry"
             );
         }
@@ -452,13 +456,14 @@ impl Writer {
                 BufWriter::new(log::create(utils::datafile_name(path, merge_fileid))?);
             let mut merge_hintfile_writer =
                 LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
+            let mut new_keydir_entries = HashMap::new();
 
             // Only go through entries whose values are located within the merged files.
-            for mut keydir_entry in self
+            for entry in self
                 .ctx
                 .keydir
-                .iter_mut()
-                .filter(|e| fileids_to_merge.contains(&e.fileid))
+                .iter()
+                .filter(|e| fileids_to_merge.contains(&e.value().fileid))
             {
                 // SAFETY: We ensure in `BitcaskWriter` that all log entries given by
                 // KeyDir are written disk, thus the readers can savely use memmap to
@@ -466,28 +471,37 @@ impl Writer {
                 let nbytes = unsafe {
                     readers.copy(
                         path,
-                        keydir_entry.fileid,
-                        keydir_entry.len,
-                        keydir_entry.pos,
+                        entry.value().fileid,
+                        entry.value().len,
+                        entry.value().pos,
                         &mut merge_datafile_writer,
                     )?
                 };
 
                 // update keydir so it points to the merge data file
-                keydir_entry.fileid = merge_fileid;
-                keydir_entry.len = nbytes;
-                keydir_entry.pos = merge_pos;
+                new_keydir_entries.insert(
+                    entry.key().clone(),
+                    KeyDirEntry {
+                        fileid: merge_fileid,
+                        len: nbytes,
+                        pos: merge_pos,
+                        tstamp: entry.value().tstamp,
+                    },
+                );
 
                 // the merge file must only contain live keys
-                let mut stats = self.ctx.stats.entry(merge_fileid).or_default();
-                stats.add_live();
+                let stats = self
+                    .ctx
+                    .stats
+                    .get_or_insert_with(merge_fileid, LogStatistics::default);
+                stats.value().add_live();
 
                 // write the KeyDir entry to the hint file for fast recovery
                 merge_hintfile_writer.append(&HintFileEntry {
-                    tstamp: keydir_entry.tstamp,
-                    len: keydir_entry.len,
-                    pos: keydir_entry.pos,
-                    key: keydir_entry.key().clone(),
+                    tstamp: entry.value().tstamp,
+                    len: entry.value().len,
+                    pos: entry.value().pos,
+                    key: entry.key().clone(),
                 })?;
 
                 // switch to new merge data file if we exceed the max file size
@@ -552,16 +566,16 @@ impl Reader {
     #[tracing::instrument(level = "debug", skip(self))]
     fn get(&self, key: Bytes) -> Result<Option<Bytes>, Error> {
         match self.ctx.keydir.get(&key) {
-            Some(keydir_entry) => {
+            Some(entry) => {
                 // SAFETY: We have taken `keydir_entry` from KeyDir which is ensured to point to
                 // valid data file positions. Thus we can be confident that the Mmap won't be
                 // mapped to an invalid segment.
                 let datafile_entry = unsafe {
                     self.readers.borrow_mut().read::<DataFileEntry, _>(
                         &self.ctx.conf.path,
-                        keydir_entry.fileid,
-                        keydir_entry.len,
-                        keydir_entry.pos,
+                        entry.value().fileid,
+                        entry.value().len,
+                        entry.value().pos,
                     )?
                 };
 
@@ -673,8 +687,8 @@ fn rebuild_storage<P>(
     path: P,
 ) -> Result<
     (
-        DashMap<Bytes, KeyDirEntry>,
-        DashMap<u64, LogStatistics>,
+        SkipMap<Bytes, KeyDirEntry>,
+        SkipMap<u64, LogStatistics>,
         u64,
     ),
     Error,
@@ -682,8 +696,8 @@ fn rebuild_storage<P>(
 where
     P: AsRef<Path>,
 {
-    let keydir = DashMap::default();
-    let stats = DashMap::default();
+    let keydir = SkipMap::default();
+    let stats = SkipMap::default();
     let fileids = utils::sorted_fileids(&path)?;
 
     let mut active_fileid = None;
@@ -719,8 +733,8 @@ where
 fn populate_keydir_with_hintfile<P>(
     path: P,
     fileid: u64,
-    keydir: &DashMap<Bytes, KeyDirEntry>,
-    stats: &DashMap<u64, LogStatistics>,
+    keydir: &SkipMap<Bytes, KeyDirEntry>,
+    stats: &SkipMap<u64, LogStatistics>,
 ) -> Result<(), Error>
 where
     P: AsRef<Path>,
@@ -735,14 +749,18 @@ where
             tstamp: entry.tstamp,
         };
         // Hint file always contains live keys
-        stats.entry(fileid).or_default().add_live();
+        stats
+            .get_or_insert_with(fileid, LogStatistics::default)
+            .value()
+            .add_live();
         // Overwrite previously written value
-        if let Some(prev_keydir_entry) = keydir.insert(entry.key, keydir_entry) {
+        if let Some(prev_entry) = keydir.remove(&entry.key) {
             stats
-                .entry(prev_keydir_entry.fileid)
-                .or_default()
-                .overwrite(prev_keydir_entry.len);
+                .get_or_insert_with(prev_entry.value().fileid, LogStatistics::default)
+                .value()
+                .overwrite(prev_entry.value().len);
         }
+        keydir.insert(entry.key, keydir_entry);
     }
     Ok(())
 }
@@ -750,8 +768,8 @@ where
 fn populate_keydir_with_datafile<P>(
     path: P,
     fileid: u64,
-    keydir: &DashMap<Bytes, KeyDirEntry>,
-    stats: &DashMap<u64, LogStatistics>,
+    keydir: &SkipMap<Bytes, KeyDirEntry>,
+    stats: &SkipMap<u64, LogStatistics>,
 ) -> Result<(), Error>
 where
     P: AsRef<Path>,
@@ -762,8 +780,8 @@ where
         match datafile_entry.value {
             // Tombstone
             None => stats
-                .entry(fileid)
-                .or_default()
+                .get_or_insert_with(fileid, LogStatistics::default)
+                .value()
                 .add_dead(datafile_index.len),
             Some(_) => {
                 let keydir_entry = KeyDirEntry {
@@ -773,14 +791,18 @@ where
                     tstamp: datafile_entry.tstamp,
                 };
                 // Add live keys
-                stats.entry(fileid).or_default().add_live();
+                stats
+                    .get_or_insert_with(fileid, LogStatistics::default)
+                    .value()
+                    .add_live();
                 // Overwrite previous value
-                if let Some(prev_keydir_entry) = keydir.insert(datafile_entry.key, keydir_entry) {
+                if let Some(prev_entry) = keydir.remove(&datafile_entry.key) {
                     stats
-                        .entry(prev_keydir_entry.fileid)
-                        .or_default()
-                        .overwrite(prev_keydir_entry.len);
+                        .get_or_insert_with(prev_entry.value().fileid, LogStatistics::default)
+                        .value()
+                        .overwrite(prev_entry.value().len);
                 }
+                keydir.insert(datafile_entry.key, keydir_entry);
             }
         }
     }
@@ -909,8 +931,8 @@ mod tests {
         let mut lives = 0;
         let mut deads = 0;
         for e in handle.ctx.stats.iter() {
-            lives += e.live_keys();
-            deads += e.dead_keys();
+            lives += e.value().live_keys();
+            deads += e.value().dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
@@ -940,8 +962,8 @@ mod tests {
         let mut lives = 0;
         let mut deads = 0;
         for e in handle.ctx.stats.iter() {
-            lives += e.live_keys();
-            deads += e.dead_keys();
+            lives += e.value().live_keys();
+            deads += e.value().dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(0, deads);
@@ -959,8 +981,8 @@ mod tests {
         let mut lives = 0;
         let mut deads = 0;
         for e in handle.ctx.stats.iter() {
-            lives += e.live_keys();
-            deads += e.dead_keys();
+            lives += e.value().live_keys();
+            deads += e.value().dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
