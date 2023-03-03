@@ -3,7 +3,6 @@ use std::{
     io::{self, Write},
     num::NonZeroUsize,
     path::Path,
-    sync::atomic::{self, AtomicU64},
 };
 
 use bytes::Buf;
@@ -25,39 +24,39 @@ pub struct LogIndex {
 /// Keeping track of the number of live/dead keys and how much space do the dead keys occupy.
 #[derive(Debug, Default)]
 pub struct LogStatistics {
-    live_keys: AtomicU64,
-    dead_keys: AtomicU64,
-    dead_bytes: AtomicU64,
+    live_keys: u64,
+    dead_keys: u64,
+    dead_bytes: u64,
 }
 
 impl LogStatistics {
     /// Add a live key to the statistics.
-    pub fn add_live(&self) {
-        self.live_keys.fetch_add(1, atomic::Ordering::AcqRel);
+    pub fn add_live(&mut self) {
+        self.live_keys += 1;
     }
 
     /// Add a dead key to the statistics where `nbytes` is the size of the entry on disk.
-    pub fn add_dead(&self, nbytes: u64) {
-        self.dead_keys.fetch_add(1, atomic::Ordering::AcqRel);
-        self.dead_bytes.fetch_add(nbytes, atomic::Ordering::AcqRel);
+    pub fn add_dead(&mut self, nbytes: u64) {
+        self.dead_keys += 1;
+        self.dead_bytes += nbytes;
     }
 
-    pub fn overwrite(&self, nbytes: u64) {
-        self.live_keys.fetch_sub(1, atomic::Ordering::AcqRel);
-        self.dead_keys.fetch_add(1, atomic::Ordering::AcqRel);
-        self.dead_bytes.fetch_add(nbytes, atomic::Ordering::AcqRel);
+    pub fn overwrite(&mut self, nbytes: u64) {
+        self.live_keys -= 1;
+        self.dead_keys += 1;
+        self.dead_bytes += nbytes;
     }
 
     pub fn live_keys(&self) -> u64 {
-        self.live_keys.load(atomic::Ordering::Acquire)
+        self.live_keys
     }
 
     pub fn dead_keys(&self) -> u64 {
-        self.dead_keys.load(atomic::Ordering::Acquire)
+        self.dead_keys
     }
 
     pub fn dead_bytes(&self) -> u64 {
-        self.dead_bytes.load(atomic::Ordering::Acquire)
+        self.dead_bytes
     }
 
     /// Calculate the fraction of dead keys to total keys

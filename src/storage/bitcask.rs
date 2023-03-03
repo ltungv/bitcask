@@ -105,9 +105,6 @@ struct Context {
     /// The mapping from keys to the positions of their values on disk.
     keydir: SkipMap<Bytes, KeyDirEntry>,
 
-    /// Counts of different metrics about the storage.
-    stats: SkipMap<u64, LogStatistics>,
-
     /// Mark whether the storage has been closed
     closed: AtomicCell<bool>,
 }
@@ -124,6 +121,9 @@ struct Writer {
 
     /// A writer that appends entries to the currently active file.
     writer: LogWriter,
+
+    /// Counts of different metrics about the storage.
+    stats: HashMap<u64, LogStatistics>,
 
     /// The ID of the currently active file.
     active_fileid: u64,
@@ -155,7 +155,6 @@ impl Bitcask {
         let ctx = Arc::new(Context {
             conf,
             keydir,
-            stats,
             closed: AtomicCell::new(false),
         });
 
@@ -176,6 +175,7 @@ impl Bitcask {
                 &ctx.conf.path,
                 active_fileid,
             ))?)?,
+            stats,
             active_fileid,
             written_bytes: 0,
         }));
@@ -270,7 +270,11 @@ impl Handle {
         if self.ctx.closed.load() {
             return Err(Error::Closed);
         }
-        self.writer.lock().merge()
+        let mut writer = self.writer.lock();
+        if writer.can_merge() {
+            writer.merge()?;
+        }
+        Ok(())
     }
 
     fn sync(&self) -> Result<(), Error> {
@@ -285,52 +289,7 @@ impl Handle {
     }
 }
 
-impl Context {
-    /// Return `true` if one of the merge trigger conditions is met.
-    fn can_merge(&self) -> bool {
-        match self.conf.merge.policy {
-            MergePolicy::Never => false,
-            ref policy => {
-                if let &MergePolicy::Window { start, end } = policy {
-                    let now = chrono::Local::now().time();
-                    let hour = now.hour();
-                    if hour < start || hour > end {
-                        return false;
-                    }
-                }
-                for entry in self.stats.iter() {
-                    // If any file met one of the trigger conditions, we'll try to merge
-                    if entry.value().dead_bytes() > self.conf.merge.triggers.dead_bytes
-                        || entry.value().fragmentation() > self.conf.merge.triggers.fragmentation
-                    {
-                        return true;
-                    }
-                }
-                false
-            }
-        }
-    }
-
-    /// Return the set of file IDs that are included for merging.
-    fn fileids_to_merge<P>(&self, path: P) -> Result<BTreeSet<u64>, Error>
-    where
-        P: AsRef<Path>,
-    {
-        let mut fileids = BTreeSet::new();
-        for entry in self.stats.iter() {
-            let fileid = *entry.key();
-            let metadata = fs::metadata(datafile_name(&path, fileid))?;
-            // Files that met one of the threshold conditions are included
-            if entry.value().dead_bytes() > self.conf.merge.thresholds.dead_bytes
-                || entry.value().fragmentation() > self.conf.merge.thresholds.fragmentation
-                || metadata.len() < self.conf.merge.thresholds.small_file
-            {
-                fileids.insert(fileid);
-            }
-        }
-        Ok(fileids)
-    }
-}
+impl Context {}
 
 impl Writer {
     /// Set the value of a key and overwrite any existing value at that key.
@@ -342,14 +301,14 @@ impl Writer {
         // Write to disk
         let keydir_entry = self.write(utils::timestamp(), key.clone(), Some(value))?;
         // If we overwrite an existing value, update the storage statistics
-        if let Some(entry) = self.ctx.keydir.remove(&key) {
-            self.ctx
-                .stats
-                .get_or_insert_with(entry.value().fileid, LogStatistics::default)
-                .value()
+        let prev_entry = self.ctx.keydir.get(&key);
+        self.ctx.keydir.insert(key, keydir_entry);
+        if let Some(entry) = prev_entry {
+            self.stats
+                .entry(entry.value().fileid)
+                .or_default()
                 .overwrite(entry.value().len);
         }
-        self.ctx.keydir.insert(key, keydir_entry);
         Ok(())
     }
 
@@ -364,10 +323,9 @@ impl Writer {
         // If we overwrite an existing value, update the storage statistics
         match self.ctx.keydir.remove(&key) {
             Some(entry) => {
-                self.ctx
-                    .stats
-                    .get_or_insert_with(entry.value().fileid, LogStatistics::default)
-                    .value()
+                self.stats
+                    .entry(entry.value().fileid)
+                    .or_default()
                     .overwrite(entry.value().len);
                 Ok(true)
             }
@@ -398,23 +356,20 @@ impl Writer {
             // Collect statistics of the active data file for the merging process. If we add
             // a value to a key, we increase the number of live keys. If we add a tombstone,
             // we increase the number of dead keys.
-            let entry = self
-                .ctx
-                .stats
-                .get_or_insert_with(self.active_fileid, LogStatistics::default);
+            let entry = self.stats.entry(self.active_fileid).or_default();
             if datafile_entry.value.is_some() {
-                entry.value().add_live();
+                entry.add_live();
             } else {
-                entry.value().add_dead(index.len);
+                entry.add_dead(index.len);
             }
             debug!(
                 entry_len = %index.len,
                 entry_pos = %index.pos,
                 active_fileid = %self.active_fileid,
                 active_file_size = %self.written_bytes,
-                active_live_keys = %entry.value().live_keys(),
-                active_dead_keys = %entry.value().dead_keys(),
-                active_dead_bytes = %entry.value().dead_bytes(),
+                active_live_keys = %entry.live_keys(),
+                active_dead_keys = %entry.dead_keys(),
+                active_dead_bytes = %entry.dead_bytes(),
                 "appended new log entry"
             );
         }
@@ -443,7 +398,9 @@ impl Writer {
         debug!(merge_fileid, "new merge file");
 
         // Get the set of file ids to be merged
-        let fileids_to_merge = self.ctx.fileids_to_merge(path)?;
+        let fileids_to_merge = self.fileids_to_merge(path)?;
+        // Copy entries to a temporary map so we don't modify the KeyDir while iterating.
+        let mut new_keydir_entries = HashMap::new();
 
         // NOTE: we use an explicit scope here to control the lifetimes of `readers`,
         // `merge_datafile_writer` and `merge_hintfile_writer`. We drop the readers
@@ -456,7 +413,6 @@ impl Writer {
                 BufWriter::new(log::create(utils::datafile_name(path, merge_fileid))?);
             let mut merge_hintfile_writer =
                 LogWriter::new(log::create(utils::hintfile_name(path, merge_fileid))?)?;
-            let mut new_keydir_entries = HashMap::new();
 
             // Only go through entries whose values are located within the merged files.
             for entry in self
@@ -478,7 +434,6 @@ impl Writer {
                     )?
                 };
 
-                // update keydir so it points to the merge data file
                 new_keydir_entries.insert(
                     entry.key().clone(),
                     KeyDirEntry {
@@ -490,11 +445,8 @@ impl Writer {
                 );
 
                 // the merge file must only contain live keys
-                let stats = self
-                    .ctx
-                    .stats
-                    .get_or_insert_with(merge_fileid, LogStatistics::default);
-                stats.value().add_live();
+                let stats = self.stats.entry(merge_fileid).or_default();
+                stats.add_live();
 
                 // write the KeyDir entry to the hint file for fast recovery
                 merge_hintfile_writer.append(&HintFileEntry {
@@ -518,9 +470,14 @@ impl Writer {
             }
         }
 
+        // Update keydir so it points to the merge data file
+        for (k, v) in new_keydir_entries {
+            self.ctx.keydir.insert(k, v);
+        }
+
         // Remove stale files from system and storage statistics
         for id in &fileids_to_merge {
-            self.ctx.stats.remove(id);
+            self.stats.remove(id);
             if let Err(e) = fs::remove_file(utils::hintfile_name(path, *id)) {
                 if e.kind() != io::ErrorKind::NotFound {
                     return Err(e.into());
@@ -537,6 +494,13 @@ impl Writer {
         Ok(())
     }
 
+    /// Synchronize data to disk. This tells the operating system to flush its internal buffer to
+    /// ensure that data is actually persisted.
+    pub fn sync(&mut self) -> Result<(), Error> {
+        self.writer.sync()?;
+        Ok(())
+    }
+
     /// Updates the active file ID and open a new data file with the new active ID.
     #[tracing::instrument(level = "debug", skip(self))]
     fn new_active_datafile(&mut self, fileid: u64) -> Result<(), Error> {
@@ -548,12 +512,48 @@ impl Writer {
         self.written_bytes = 0;
         Ok(())
     }
+    /// Return `true` if one of the merge trigger conditions is met.
+    fn can_merge(&self) -> bool {
+        match self.ctx.conf.merge.policy {
+            MergePolicy::Never => false,
+            ref policy => {
+                if let &MergePolicy::Window { start, end } = policy {
+                    let now = chrono::Local::now().time();
+                    let hour = now.hour();
+                    if hour < start || hour > end {
+                        return false;
+                    }
+                }
+                for (_, entry) in self.stats.iter() {
+                    // If any file met one of the trigger conditions, we'll try to merge
+                    if entry.dead_bytes() > self.ctx.conf.merge.triggers.dead_bytes
+                        || entry.fragmentation() > self.ctx.conf.merge.triggers.fragmentation
+                    {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
 
-    /// Synchronize data to disk. This tells the operating system to flush its internal buffer to
-    /// ensure that data is actually persisted.
-    pub fn sync(&mut self) -> Result<(), Error> {
-        self.writer.sync()?;
-        Ok(())
+    /// Return the set of file IDs that are included for merging.
+    fn fileids_to_merge<P>(&self, path: P) -> Result<BTreeSet<u64>, Error>
+    where
+        P: AsRef<Path>,
+    {
+        let mut fileids = BTreeSet::new();
+        for (&fileid, stats) in self.stats.iter() {
+            let metadata = fs::metadata(datafile_name(&path, fileid))?;
+            // Files that met one of the threshold conditions are included
+            if stats.dead_bytes() > self.ctx.conf.merge.thresholds.dead_bytes
+                || stats.fragmentation() > self.ctx.conf.merge.thresholds.fragmentation
+                || metadata.len() < self.ctx.conf.merge.thresholds.small_file
+            {
+                fileids.insert(fileid);
+            }
+        }
+        Ok(fileids)
     }
 }
 
@@ -646,11 +646,9 @@ async fn merge_on_interval(handle: Handle, mut shutdown: Shutdown) -> Result<(),
                 return Ok(());
             },
         };
-        if handle.ctx.can_merge() {
-            let handle = handle.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || handle.merge()).await? {
-                error!(cause=?e, "merge error");
-            }
+        let handle = handle.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || handle.merge()).await? {
+            error!(cause=?e, "merge error");
         }
     }
     Ok(())
@@ -688,7 +686,7 @@ fn rebuild_storage<P>(
 ) -> Result<
     (
         SkipMap<Bytes, KeyDirEntry>,
-        SkipMap<u64, LogStatistics>,
+        HashMap<u64, LogStatistics>,
         u64,
     ),
     Error,
@@ -697,7 +695,7 @@ where
     P: AsRef<Path>,
 {
     let keydir = SkipMap::default();
-    let stats = SkipMap::default();
+    let mut stats = HashMap::default();
     let fileids = utils::sorted_fileids(&path)?;
 
     let mut active_fileid = None;
@@ -712,11 +710,11 @@ where
             }
         }
         // Read the hint file, if it does not exist, read the data file.
-        if let Err(e) = populate_keydir_with_hintfile(&path, fileid, &keydir, &stats) {
+        if let Err(e) = populate_keydir_with_hintfile(&path, fileid, &keydir, &mut stats) {
             match e {
                 Error::Io(ref ioe) => match ioe.kind() {
                     io::ErrorKind::NotFound => {
-                        populate_keydir_with_datafile(&path, fileid, &keydir, &stats)?;
+                        populate_keydir_with_datafile(&path, fileid, &keydir, &mut stats)?;
                     }
                     _ => return Err(e),
                 },
@@ -734,7 +732,7 @@ fn populate_keydir_with_hintfile<P>(
     path: P,
     fileid: u64,
     keydir: &SkipMap<Bytes, KeyDirEntry>,
-    stats: &SkipMap<u64, LogStatistics>,
+    stats: &mut HashMap<u64, LogStatistics>,
 ) -> Result<(), Error>
 where
     P: AsRef<Path>,
@@ -749,18 +747,16 @@ where
             tstamp: entry.tstamp,
         };
         // Hint file always contains live keys
-        stats
-            .get_or_insert_with(fileid, LogStatistics::default)
-            .value()
-            .add_live();
+        stats.entry(fileid).or_default().add_live();
         // Overwrite previously written value
-        if let Some(prev_entry) = keydir.remove(&entry.key) {
+        let prev_entry = keydir.get(&entry.key);
+        keydir.insert(entry.key, keydir_entry);
+        if let Some(prev_entry) = prev_entry {
             stats
-                .get_or_insert_with(prev_entry.value().fileid, LogStatistics::default)
-                .value()
+                .entry(prev_entry.value().fileid)
+                .or_default()
                 .overwrite(prev_entry.value().len);
         }
-        keydir.insert(entry.key, keydir_entry);
     }
     Ok(())
 }
@@ -769,7 +765,7 @@ fn populate_keydir_with_datafile<P>(
     path: P,
     fileid: u64,
     keydir: &SkipMap<Bytes, KeyDirEntry>,
-    stats: &SkipMap<u64, LogStatistics>,
+    stats: &mut HashMap<u64, LogStatistics>,
 ) -> Result<(), Error>
 where
     P: AsRef<Path>,
@@ -780,8 +776,8 @@ where
         match datafile_entry.value {
             // Tombstone
             None => stats
-                .get_or_insert_with(fileid, LogStatistics::default)
-                .value()
+                .entry(fileid)
+                .or_default()
                 .add_dead(datafile_index.len),
             Some(_) => {
                 let keydir_entry = KeyDirEntry {
@@ -791,18 +787,16 @@ where
                     tstamp: datafile_entry.tstamp,
                 };
                 // Add live keys
-                stats
-                    .get_or_insert_with(fileid, LogStatistics::default)
-                    .value()
-                    .add_live();
+                stats.entry(fileid).or_default().add_live();
                 // Overwrite previous value
-                if let Some(prev_entry) = keydir.remove(&datafile_entry.key) {
+                let prev_entry = keydir.get(&datafile_entry.key);
+                keydir.insert(datafile_entry.key, keydir_entry);
+                if let Some(prev_entry) = prev_entry {
                     stats
-                        .get_or_insert_with(prev_entry.value().fileid, LogStatistics::default)
-                        .value()
+                        .entry(prev_entry.value().fileid)
+                        .or_default()
                         .overwrite(prev_entry.value().len);
                 }
-                keydir.insert(datafile_entry.key, keydir_entry);
             }
         }
     }
@@ -930,9 +924,9 @@ mod tests {
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        for e in handle.ctx.stats.iter() {
-            lives += e.value().live_keys();
-            deads += e.value().dead_keys();
+        for (_, e) in handle.writer.lock().stats.iter() {
+            lives += e.live_keys();
+            deads += e.dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
@@ -961,9 +955,9 @@ mod tests {
         // should get 10000 live keys and 0 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        for e in handle.ctx.stats.iter() {
-            lives += e.value().live_keys();
-            deads += e.value().dead_keys();
+        for (_, e) in handle.writer.lock().stats.iter() {
+            lives += e.live_keys();
+            deads += e.dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(0, deads);
@@ -980,9 +974,9 @@ mod tests {
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
         let mut deads = 0;
-        for e in handle.ctx.stats.iter() {
-            lives += e.value().live_keys();
-            deads += e.value().dead_keys();
+        for (_, e) in handle.writer.lock().stats.iter() {
+            lives += e.live_keys();
+            deads += e.dead_keys();
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
