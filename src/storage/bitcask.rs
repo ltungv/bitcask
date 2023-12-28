@@ -405,10 +405,18 @@ where
     while let Some((datafile_index, datafile_entry)) = datafile_iter.next::<DataFileEntry>()? {
         match datafile_entry.value {
             // Tombstone
-            None => stats
-                .entry(fileid)
-                .or_default()
-                .add_dead(datafile_index.len),
+            None => {
+                stats
+                    .entry(fileid)
+                    .or_default()
+                    .add_dead(datafile_index.len);
+                if let Some(prev_entry) = keydir.remove(&datafile_entry.key) {
+                    stats
+                        .entry(prev_entry.value().fileid)
+                        .or_default()
+                        .overwrite(prev_entry.value().len);
+                }
+            }
             Some(_) => {
                 let keydir_entry = KeyDirEntry {
                     fileid,

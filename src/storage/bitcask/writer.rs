@@ -90,7 +90,7 @@ impl Writer {
         // Write to disk
         self.write(utils::timestamp(), key.clone(), None)?;
         // If we overwrite an existing value, update the storage statistics
-        match self.ctx.get_keydir().get(&key) {
+        match self.ctx.get_keydir().remove(&key) {
             Some(prev_entry) => {
                 self.stats
                     .entry(prev_entry.value().fileid)
