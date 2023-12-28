@@ -195,7 +195,7 @@ impl LogReader {
         }
         let start = pos as usize;
         let end = start + len as usize;
-        Ok(bincode::deserialize(&self.mmap[(start..end)])?)
+        Ok(bincode::deserialize(&self.mmap[start..end])?)
     }
 
     /// Copy the raw data at the given position into the writer at `dst` by mapping the file segment

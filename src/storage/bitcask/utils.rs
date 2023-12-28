@@ -54,7 +54,9 @@ where
 
 /// Return system unix nano timestamp
 pub(super) fn timestamp() -> i64 {
-    chrono::Local::now().timestamp_nanos()
+    chrono::Local::now()
+        .timestamp_nanos_opt()
+        .expect("Failed to get timestamp in nanoseconds")
 }
 
 #[cfg(test)]
