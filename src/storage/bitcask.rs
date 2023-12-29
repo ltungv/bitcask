@@ -484,67 +484,67 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn bitcask_sequential_read_after_write_should_return_the_written_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let conf = Config::default()
+    fn simple_test_config(path: &Path) -> Config {
+        Config::default()
+            .path(path)
             .concurrency(NonZeroUsize::new(1).unwrap())
-            .path(dir.path())
-            .to_owned();
+            .max_file_size(NonZeroU64::new(64 * 1024).unwrap())
+            .to_owned()
+    }
+
+    #[test]
+    fn bitcask_basic_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = simple_test_config(dir.path());
+
         let kv = conf.open().unwrap();
         let handle = kv.get_handle();
 
-        proptest!(|(key in collection::vec(any::<u8>(), 0..64),
-                    value in collection::vec(any::<u8>(), 0..256))| {
-            handle.put(Bytes::from(key.clone()), Bytes::from(value.clone())).unwrap();
-            let value_from_kv = handle.get(Bytes::from(key)).unwrap();
-            prop_assert_eq!(Some(Bytes::from(value)), value_from_kv);
+        let key_strat = collection::vec(any::<u8>(), 0..64);
+        let val_strat = collection::vec(any::<u8>(), 0..256);
+
+        proptest!(|(key in key_strat, val1 in &val_strat, val2 in &val_strat)| {
+            let k = Bytes::from(key);
+            let v1 = Bytes::from(val1);
+            let v2 = Bytes::from(val2);
+            // insert
+            handle.put(k.clone(), v1.clone()).unwrap();
+            prop_assert_eq!(Some(v1.clone()), handle.get(k.clone()).unwrap());
+            // delete
+            handle.del(k.clone()).unwrap();
+            prop_assert_eq!(None, handle.get(k.clone()).unwrap());
+            // reinsert
+            handle.put(k.clone(), v2.clone()).unwrap();
+            prop_assert_eq!(Some(v2.clone()), handle.get(k.clone()).unwrap());
+        });
+    }
+
+    #[test]
+    fn bitcask_sequential_read_after_write_should_return_the_written_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = simple_test_config(dir.path());
+
+        let kv = conf.open().unwrap();
+        let handle = kv.get_handle();
+
+        let key_strat = collection::vec(any::<u8>(), 0..64);
+        let val_strat = collection::vec(any::<u8>(), 0..256);
+
+        proptest!(|(key in key_strat, val in val_strat)| {
+            let k = Bytes::from(key);
+            let v = Bytes::from(val);
+            handle.put(k.clone(), v.clone()).unwrap();
+            prop_assert_eq!(Some(v), handle.get(k).unwrap());
         });
     }
 
     #[test]
     fn bitcask_rebuilt_keydir_correctly() {
         let dir = tempfile::tempdir().unwrap();
-        // create lots of small files to test reading across different files
-        let conf = Config::default()
-            .concurrency(NonZeroUsize::new(1).unwrap())
-            .max_file_size(NonZeroU64::new(64 * 1024).unwrap())
-            .path(dir.path())
-            .to_owned();
-        {
-            let kv = conf.clone().open().unwrap();
-            let handle = kv.get_handle();
-            // put 10000 different keys
-            for i in 0..10000 {
-                handle
-                    .put(
-                        Bytes::from(format!("key{i}")),
-                        Bytes::from(format!("value{i}")),
-                    )
-                    .unwrap();
-            }
-        }
+        let conf = simple_test_config(dir.path());
 
-        // rebuild bitcask
-        let kv = conf.open().unwrap();
-        let handle = kv.get_handle();
-        // get 10000 different keys
-        for i in 0..10000 {
-            let value = handle.get(Bytes::from(format!("key{i}"))).unwrap().unwrap();
-            assert_eq!(Bytes::from(format!("value{i}")), value);
-        }
-    }
-
-    #[test]
-    fn bitcask_rebuilt_stats_correctly() {
-        let dir = tempfile::tempdir().unwrap();
-        // create lots of small files to test reading across different files
-        let conf = Config::default()
-            .concurrency(NonZeroUsize::new(1).unwrap())
-            .max_file_size(NonZeroU64::new(64 * 1024).unwrap())
-            .path(dir.path())
-            .to_owned();
-
+        // perform operations within a scope so our data store gets dropped
+        // before we rebuild it.
         {
             let kv = conf.clone().open().unwrap();
             let handle = kv.get_handle();
@@ -566,33 +566,86 @@ mod tests {
                     )
                     .unwrap();
             }
+            // delete first 5000 keys
+            for i in 0..5000 {
+                handle.del(Bytes::from(format!("key{i}"))).unwrap();
+            }
         }
 
         // rebuild bitcask
         let kv = conf.open().unwrap();
         let handle = kv.get_handle();
-        // should get 10000 live keys and 5000 dead keys.
+        // first 5000 keys should be deleted
+        for i in 0..5000 {
+            let value = handle.get(Bytes::from(format!("key{i}"))).unwrap();
+            assert!(value.is_none())
+        }
+        // get last 5000 keys
+        for i in 5000..10000 {
+            let value = handle.get(Bytes::from(format!("key{i}"))).unwrap().unwrap();
+            assert_eq!(Bytes::from(format!("value{i}")), value);
+        }
+    }
+
+    #[test]
+    fn bitcask_rebuilt_stats_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = simple_test_config(dir.path());
+
+        // perform operations within a scope so our data store gets dropped
+        // before we rebuild it.
+        {
+            let kv = conf.clone().open().unwrap();
+            let handle = kv.get_handle();
+            // put 10000 different keys
+            for i in 0..10000 {
+                handle
+                    .put(
+                        Bytes::from(format!("key{i}")),
+                        Bytes::from(format!("value{i}")),
+                    )
+                    .unwrap();
+            }
+            // overwrite 5000 keys
+            for i in 0..5000 {
+                handle
+                    .put(
+                        Bytes::from(format!("key{i}")),
+                        Bytes::from(format!("value{i}")),
+                    )
+                    .unwrap();
+            }
+            // delete 5000 keys
+            for i in 0..5000 {
+                handle.del(Bytes::from(format!("key{i}"))).unwrap();
+            }
+        }
+
+        // rebuild bitcask
+        let kv = conf.open().unwrap();
+        let handle = kv.get_handle();
+        // should get 5000 live keys and 15000 dead keys, in which:
+        // - 5000 live keys that were not overwritten or deleted.
+        // - 5000 dead keys resulted from overwriting.
+        // - 10000 dead keys resulted from deleting.
         let mut lives = 0;
         let mut deads = 0;
         for (_, e) in handle.writer.lock().get_stats().iter() {
             lives += e.live_keys();
             deads += e.dead_keys();
         }
-        assert_eq!(10000, lives);
-        assert_eq!(5000, deads);
+        assert_eq!(5000, lives);
+        assert_eq!(15000, deads);
     }
 
     #[test]
     fn bitcask_collect_statistics() {
         let dir = tempfile::tempdir().unwrap();
-        // create lots of small files to test reading across different files
-        let conf = Config::default()
-            .concurrency(NonZeroUsize::new(1).unwrap())
-            .max_file_size(NonZeroU64::new(64 * 1024).unwrap())
-            .path(dir.path())
-            .to_owned();
+        let conf = simple_test_config(dir.path());
+
         let kv = conf.open().unwrap();
         let handle = kv.get_handle();
+
         // put 10000 different keys
         for i in 0..10000 {
             handle
@@ -602,6 +655,7 @@ mod tests {
                 )
                 .unwrap();
         }
+
         // should get 10000 live keys and 0 dead keys.
         let mut lives = 0;
         let mut deads = 0;
@@ -621,6 +675,7 @@ mod tests {
                 )
                 .unwrap();
         }
+
         // should get 10000 live keys and 5000 dead keys.
         let mut lives = 0;
         let mut deads = 0;
@@ -630,5 +685,20 @@ mod tests {
         }
         assert_eq!(10000, lives);
         assert_eq!(5000, deads);
+
+        // delete 5000 keys
+        for i in 0..5000 {
+            handle.del(Bytes::from(format!("key{i}"))).unwrap();
+        }
+
+        // should get 5000 live keys and 15000 dead keys.
+        let mut lives = 0;
+        let mut deads = 0;
+        for (_, e) in handle.writer.lock().get_stats().iter() {
+            lives += e.live_keys();
+            deads += e.dead_keys();
+        }
+        assert_eq!(5000, lives);
+        assert_eq!(15000, deads);
     }
 }

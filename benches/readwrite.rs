@@ -40,7 +40,6 @@ impl KeyValuePair {
         let key_dist = Uniform::from(1..key_size);
         let val_dist = Uniform::from(1..val_size);
         (0..size)
-            .into_iter()
             .map(|_| {
                 let ksz = key_dist.sample(rng);
                 let vsz = val_dist.sample(rng);
@@ -75,7 +74,7 @@ where
     kv_pairs
         .into_par_iter()
         .for_each_with(engine, |engine, kv| {
-            engine.set(black_box(kv.0), black_box(kv.1)).unwrap();
+            black_box(engine.set(kv.0, kv.1)).unwrap();
         });
 }
 
@@ -86,7 +85,7 @@ where
     kv_pairs
         .into_par_iter()
         .for_each_with(engine, |engine, kv| {
-            engine.get(black_box(kv.0)).unwrap();
+            black_box(engine.get(kv.0)).unwrap();
         });
 }
 
@@ -95,7 +94,7 @@ where
     E: KeyValueStorage,
 {
     kv_pairs.into_iter().for_each(|kv| {
-        engine.set(black_box(kv.0), black_box(kv.1)).unwrap();
+        black_box(engine.set(kv.0, kv.1)).unwrap();
     });
 }
 
@@ -104,7 +103,7 @@ where
     E: KeyValueStorage,
 {
     kv_pairs.into_iter().for_each(|kv| {
-        engine.get(black_box(kv.0)).unwrap();
+        black_box(engine.get(kv.0)).unwrap();
     });
 }
 
@@ -127,7 +126,7 @@ fn bench_write(c: &mut Criterion) {
                 kv_pairs.shuffle(&mut rng);
                 (engine.get_handle(), kv_pairs)
             },
-            |(engine, kvs)| black_box(sequential_write(engine, kvs)),
+            |(engine, kvs)| sequential_write(engine, kvs),
             BatchSize::LargeInput,
         );
     });
@@ -145,7 +144,7 @@ fn bench_write(c: &mut Criterion) {
                             kv_pairs.shuffle(&mut rng);
                             (engine.get_handle(), kv_pairs)
                         },
-                        |(engine, kvs)| black_box(concurrent_write(engine, kvs)),
+                        |(engine, kvs)| concurrent_write(engine, kvs),
                         BatchSize::LargeInput,
                     );
                 });
@@ -178,7 +177,7 @@ fn bench_read(c: &mut Criterion) {
                 kv_pairs.shuffle(&mut rng);
                 (engine.get_handle(), kv_pairs)
             },
-            |(engine, kvs)| black_box(sequential_read(engine, kvs)),
+            |(engine, kvs)| sequential_read(engine, kvs),
             BatchSize::LargeInput,
         );
     });
@@ -200,7 +199,7 @@ fn bench_read(c: &mut Criterion) {
                             kv_pairs.shuffle(&mut rng);
                             (engine.get_handle(), kv_pairs)
                         },
-                        |(engine, kvs)| black_box(concurrent_read(engine, kvs)),
+                        |(engine, kvs)| concurrent_read(engine, kvs),
                         BatchSize::LargeInput,
                     );
                 });
