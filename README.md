@@ -14,7 +14,7 @@ The repositoy contains a simple key-value store that uses [Bitcask](https://riak
 Clone the repository and build the project. Once finish, the executables are placed in the `target/release` folder.
 
 ```bash
-$ git clone https://github.com/letung3105/bitcask.git
+$ git clone https://github.com/ltungv/bitcask.git
 $ cd bitcask && cargo build --release
 ```
 
